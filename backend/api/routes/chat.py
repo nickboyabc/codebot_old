@@ -4,14 +4,15 @@
 from fastapi import APIRouter, HTTPException, Body, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional, Tuple
-from datetime import datetime
+from typing import List, Optional, Tuple, Dict, Any
+from datetime import datetime, timedelta
 from uuid import uuid4
 import re
 import json
 import base64
 import tempfile
 import os
+import hashlib
 
 import asyncio
 
@@ -19,7 +20,7 @@ from loguru import logger
 from config import settings, app_config
 from database.init_db import conversations_db
 from core.memory_manager import MemoryManager
-from core.opencode_ws import OpenCodeClient, _conversation_current_session
+from core.opencode_ws import OpenCodeClient, _conversation_current_session, is_conversation_running, unmark_conversation_running
 from core.memory_extractor import extract_and_save_background
 from api.routes import scheduler as scheduler_router
 from api.routes import mcp as mcp_router
@@ -34,6 +35,7 @@ sandbox_manager = None
 # 任务队列：key=conversation_id(str), value=asyncio.Queue[dict]
 _task_queues: dict = {}
 _queue_runners: dict = {}  # key=conversation_id -> asyncio.Task
+_runtime_stream_state: Dict[str, Dict[str, Any]] = {}
 
 
 class MessageRequest(BaseModel):
@@ -84,11 +86,126 @@ class SkillGenerateRequest(BaseModel):
     message_limit: int = 50
 
 def generate_conversation_title(content: str) -> str:
-    text = " ".join(content.strip().split())
+    text = _sanitize_assistant_output(content)
+    text = " ".join(text.strip().split())
+    text = re.sub(r"`{1,3}[\s\S]*?`{1,3}", "", text).strip()
+    for sep in ["\n", "。", "！", "？", "；", ";"]:
+        if sep in text:
+            text = text.split(sep, 1)[0].strip()
+            break
+    if any(token in text.lower() for token in ["system_policy", "conversation_context", "internal_context"]):
+        text = ""
     if not text:
         return "新对话"
     max_length = 20
     return text if len(text) <= max_length else f"{text[:max_length]}..."
+
+
+def _sanitize_assistant_output(content: str) -> str:
+    if not content:
+        return ""
+    text = str(content).replace("\r\n", "\n")
+    text = re.sub(r"(?is)<(system_policy|conversation_context)>[\s\S]*?</\1>", "", text)
+    text = re.sub(r"(?is)</?(system_policy|conversation_context)>", "", text)
+    text = re.sub(r"(?m)^【用户输入】.*$", "", text)
+    instruction_idx = text.find("请只输出给用户的最终结果")
+    if instruction_idx >= 0:
+        suffix = text[instruction_idx:]
+        dot_idx = suffix.find("。")
+        if dot_idx >= 0:
+            text = suffix[dot_idx + 1:]
+        else:
+            text = ""
+    if any(tag in text.lower() for tag in ["system_policy", "conversation_context", "internal_context"]):
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        text = lines[-1] if lines else ""
+    text = text.strip()
+    return text
+
+
+def _skill_content_is_noise(text: str) -> bool:
+    if not text:
+        return True
+    lower = text.lower()
+    blocked = [
+        "system_policy",
+        "conversation_context",
+        "internal_context",
+        "请只输出给用户的最终结果",
+    ]
+    return any(token in lower for token in blocked)
+
+
+def _runtime_state(conv_id: str) -> Dict[str, Any]:
+    state = _runtime_stream_state.get(conv_id)
+    if state is None:
+        state = {"seq": 0, "events": [], "content": "", "running": False, "updated_at": datetime.now()}
+        _runtime_stream_state[conv_id] = state
+    return state
+
+
+def _cleanup_runtime_states():
+    now = datetime.now()
+    to_remove = []
+    for conv_id, state in _runtime_stream_state.items():
+        updated_at = state.get("updated_at") or now
+        running = bool(state.get("running"))
+        if not running and (now - updated_at) > timedelta(minutes=20):
+            to_remove.append(conv_id)
+    for conv_id in to_remove:
+        _runtime_stream_state.pop(conv_id, None)
+
+
+def _runtime_start(conv_id: str):
+    _cleanup_runtime_states()
+    state = _runtime_state(conv_id)
+    state["seq"] = 0
+    state["events"] = []
+    state["content"] = ""
+    state["running"] = True
+    state["updated_at"] = datetime.now()
+
+
+def _runtime_set_content(conv_id: str, content: str):
+    state = _runtime_state(conv_id)
+    state["content"] = content or ""
+    state["updated_at"] = datetime.now()
+
+
+def _runtime_append_event(conv_id: str, event: dict):
+    state = _runtime_state(conv_id)
+    state["seq"] = int(state.get("seq", 0)) + 1
+    payload = dict(event)
+    payload["seq"] = state["seq"]
+    payload["created_at"] = datetime.utcnow().isoformat() + "Z"
+    events = state.get("events", [])
+    events.append(payload)
+    if len(events) > 200:
+        events = events[-200:]
+    state["events"] = events
+    state["updated_at"] = datetime.now()
+
+
+def _runtime_finish(conv_id: str, content: str = ""):
+    state = _runtime_state(conv_id)
+    if content:
+        state["content"] = content
+    state["running"] = False
+    state["updated_at"] = datetime.now()
+
+
+def _runtime_snapshot(conv_id: str, since_seq: int = 0) -> Dict[str, Any]:
+    state = _runtime_stream_state.get(conv_id)
+    if not state:
+        return {"events": [], "last_seq": int(since_seq), "content": "", "running": False}
+    events = state.get("events", [])
+    filtered = [e for e in events if int(e.get("seq", 0)) > int(since_seq)]
+    return {
+        "events": filtered,
+        "last_seq": int(state.get("seq", 0)),
+        "content": state.get("content", "") or "",
+        "running": bool(state.get("running")),
+    }
 
 
 async def _execute_opencode_client(message: str, model: Optional[str] = None, mode: Optional[str] = None, conversation_id: Optional[str] = None) -> Tuple[Optional[str], bool]:
@@ -103,7 +220,7 @@ async def _execute_opencode_client(message: str, model: Optional[str] = None, mo
             return None, False
         result = await client.execute_task(message, model=model, mode=mode, conversation_id=conversation_id)
         if result.success:
-            return result.content or None, True
+            return _sanitize_assistant_output(result.content or "") or None, True
         return result.error or None, True
     except Exception as e:
         logger.error(f"OpenCode 调用失败: {e}")
@@ -133,7 +250,7 @@ async def _execute_opencode_client_with_parts(
             return None, False, []
         result = await client.execute_task(message, model=model, mode=mode, conversation_id=conversation_id)
         if result.success:
-            return result.content or None, True, result.parts or []
+            return _sanitize_assistant_output(result.content or "") or None, True, result.parts or []
         return result.error or None, True, []
     except Exception as e:
         logger.error(f"OpenCode 调用失败: {e}")
@@ -397,10 +514,11 @@ async def _execute_opencode(message: str, model: Optional[str] = None, mode: Opt
 
     # 定时任务优先判断（不受记忆判断干扰）
     schedule_like = _looks_like_schedule_message(message)
+    birthday_reminder_like = _looks_like_birthday_reminder_message(message)
     # 记忆判断：已在 _looks_like_memory_message 内部排除定时任务消息
     memory_like = _looks_like_memory_message(message) or _looks_like_birthday_memory_intent(message)
     # 若已识别为定时任务，则不再路由到记忆
-    if schedule_like:
+    if schedule_like and not birthday_reminder_like:
         memory_like = False
 
     wants_action = schedule_like or memory_like
@@ -410,6 +528,10 @@ async def _execute_opencode(message: str, model: Optional[str] = None, mode: Opt
         if schedule_like:
             scheduled = await _try_create_scheduled_task(message)
             if scheduled:
+                if birthday_reminder_like:
+                    saved = await _try_save_memory(message)
+                    if saved:
+                        return f"{saved}\n\n{scheduled}"
                 return scheduled
 
         # 记忆处理（仅在非定时任务场景下）
@@ -457,9 +579,9 @@ async def _execute_opencode(message: str, model: Optional[str] = None, mode: Opt
         logger.warning(f"[ToolDispatcher] 增强 prompt 失败（跳过）: {_disp_err}")
         augmented = message
 
-    prompt = await _build_opencode_prompt_with_memory(augmented)
+    prompt = await _build_opencode_prompt_with_memory(augmented, mode=mode)
     content, _ = await _execute_opencode_client(prompt, model=model, mode=mode, conversation_id=conversation_id)
-    content = content or ""
+    content = _sanitize_assistant_output(content or "")
 
     if not content:
         memory_fallback = await _try_answer_from_semantic_memory(message)
@@ -481,8 +603,9 @@ async def _execute_opencode_with_meta(
         return mcp_reply, []
 
     schedule_like = _looks_like_schedule_message(message)
+    birthday_reminder_like = _looks_like_birthday_reminder_message(message)
     memory_like = _looks_like_memory_message(message) or _looks_like_birthday_memory_intent(message)
-    if schedule_like:
+    if schedule_like and not birthday_reminder_like:
         memory_like = False
 
     wants_action = schedule_like or memory_like
@@ -490,6 +613,10 @@ async def _execute_opencode_with_meta(
         if schedule_like:
             scheduled = await _try_create_scheduled_task(message)
             if scheduled:
+                if birthday_reminder_like:
+                    saved = await _try_save_memory(message)
+                    if saved:
+                        return f"{saved}\n\n{scheduled}", []
                 return scheduled, []
         if memory_like:
             saved = await _try_save_memory(message)
@@ -531,14 +658,14 @@ async def _execute_opencode_with_meta(
         logger.warning(f"[ToolDispatcher] 增强 prompt 失败（跳过）: {_disp_err}")
         augmented = message
 
-    prompt = await _build_opencode_prompt_with_memory(augmented)
+    prompt = await _build_opencode_prompt_with_memory(augmented, mode=mode)
     content, _, parts = await _execute_opencode_client_with_parts(
         prompt,
         model=model,
         mode=mode,
         conversation_id=conversation_id
     )
-    content = content or ""
+    content = _sanitize_assistant_output(content or "")
 
     if not content:
         memory_fallback = await _try_answer_from_semantic_memory(message)
@@ -562,8 +689,9 @@ async def _stream_execute_opencode_with_meta(
         return
 
     schedule_like = _looks_like_schedule_message(message)
+    birthday_reminder_like = _looks_like_birthday_reminder_message(message)
     memory_like = _looks_like_memory_message(message) or _looks_like_birthday_memory_intent(message)
-    if schedule_like:
+    if schedule_like and not birthday_reminder_like:
         memory_like = False
 
     wants_action = schedule_like or memory_like
@@ -571,6 +699,11 @@ async def _stream_execute_opencode_with_meta(
         if schedule_like:
             scheduled = await _try_create_scheduled_task(message)
             if scheduled:
+                if birthday_reminder_like:
+                    saved = await _try_save_memory(message)
+                    if saved:
+                        yield {"type": "done", "content": f"{saved}\n\n{scheduled}", "parts": []}
+                        return
                 yield {"type": "done", "content": scheduled, "parts": []}
                 return
         if memory_like:
@@ -619,7 +752,7 @@ async def _stream_execute_opencode_with_meta(
         logger.warning(f"[ToolDispatcher] 增强 prompt 失败（跳过）: {_disp_err}")
         augmented = message
 
-    prompt = await _build_opencode_prompt_with_memory(augmented)
+    prompt = await _build_opencode_prompt_with_memory(augmented, mode=mode)
 
     client = opencode_ws
     created_client = False
@@ -670,8 +803,9 @@ async def _try_ai_route_action(message: str) -> Tuple[Optional[str], bool]:
 
     memory_like = _looks_like_memory_message(message)
     schedule_like = _looks_like_schedule_message(message)
+    birthday_reminder_like = _looks_like_birthday_reminder_message(message)
     # 定时任务优先：已识别为定时任务则不再判断记忆
-    if schedule_like:
+    if schedule_like and not birthday_reminder_like:
         memory_like = False
     allowed_actions = []
     if schedule_like:
@@ -807,6 +941,48 @@ async def _try_ai_route_action(message: str) -> Tuple[Optional[str], bool]:
     return None, opencode_available
 
 
+def _looks_like_birthday_reminder_message(message: str) -> bool:
+    text = (message or "").strip()
+    if not text:
+        return False
+    if "生日" not in text:
+        return False
+    if not _extract_birthday_value(text):
+        return False
+    reminder_keys = ["提醒", "闹钟", "提示我", "叫我", "通知我", "别忘了", "记得"]
+    return any(key in text for key in reminder_keys)
+
+
+def _extract_time_for_reminder(message: str, default_hour: int = 9, default_minute: int = 0) -> Tuple[int, int]:
+    text = (message or "").strip()
+    if not text:
+        return default_hour, default_minute
+    time_match = re.search(r"(\d{1,2})\s*[:：]\s*(\d{1,2})", text)
+    if time_match:
+        hour = max(0, min(23, int(time_match.group(1))))
+        minute = max(0, min(59, int(time_match.group(2))))
+        return hour, minute
+    half_match = re.search(r"(\d{1,2})\s*点\s*半", text)
+    if half_match:
+        hour = int(half_match.group(1))
+        if ("下午" in text or "晚上" in text) and hour < 12:
+            hour += 12
+        if "凌晨" in text and hour == 12:
+            hour = 0
+        return max(0, min(23, hour)), 30
+    dot_match = re.search(r"(\d{1,2})\s*点(?:\s*(\d{1,2}))?\s*分?", text)
+    if dot_match:
+        hour = int(dot_match.group(1))
+        minute = int(dot_match.group(2)) if dot_match.group(2) else 0
+        if ("下午" in text or "晚上" in text) and hour < 12:
+            hour += 12
+        if "凌晨" in text and hour == 12:
+            hour = 0
+        minute = max(0, min(59, minute))
+        return max(0, min(23, hour)), minute
+    return default_hour, default_minute
+
+
 def _looks_like_schedule_message(message: str) -> bool:
     if not message:
         return False
@@ -825,8 +1001,14 @@ def _looks_like_schedule_message(message: str) -> bool:
         or re.search(r"\d+\s*(分钟|小时|天|周|个月|年)\s*(后|之后|以后)", message)
         or re.search(r"(半小时|一小时|一天|一周|一个月)\s*(后|之后|以后)", message)
     )
-    if not has_time_hint:
+    has_date_hint = bool(
+        re.search(r"\d{1,2}\s*月\s*\d{1,2}\s*(日|号)?", message)
+        or re.search(r"(?<!\d)\d{1,2}\s*[\/\-.]\s*\d{1,2}(?!\d)", message)
+    )
+    if not has_time_hint and not has_date_hint:
         return False
+    if _looks_like_birthday_reminder_message(message):
+        return True
     # 含"保存到X盘"是明确的文件任务，有时间就是定时任务
     if re.search(r"保存到\s*[a-zA-Z]\s*盘", message):
         return True
@@ -863,6 +1045,36 @@ async def _try_create_scheduled_task(message: str) -> Optional[str]:
     if not scheduler_router.scheduler:
         return None
     try:
+        if _looks_like_birthday_reminder_message(message):
+            birthday = _extract_birthday_value(message or "")
+            if birthday:
+                md = re.search(r"(\d{1,2})月(\d{1,2})日", birthday)
+                if md:
+                    month = int(md.group(1))
+                    day = int(md.group(2))
+                    hour, minute = _extract_time_for_reminder(message)
+                    subject = _extract_birthday_subject(message) or "我"
+                    if subject == "我":
+                        remind_text = "今天是你的生日，生日快乐！"
+                        name = f"生日提醒：每年{month}月{day}日"
+                    else:
+                        remind_text = f"今天是{subject}的生日，记得送上祝福。"
+                        name = f"生日提醒：{subject}每年{month}月{day}日"
+                    task_prompt = f"__REMINDER__\n{remind_text}"
+                    cron_expression = f"{minute} {hour} {day} {month} *"
+                    task = scheduler_router.scheduler.create_task(
+                        name=name,
+                        cron_expression=cron_expression,
+                        task_prompt=task_prompt,
+                        notify_channels=["app"]
+                    )
+                    next_run = task.next_run.isoformat() if task.next_run else "待计算"
+                    return (
+                        f"已创建定时任务：{task.name}\n"
+                        f"Cron：{task.cron_expression}\n"
+                        f"下次运行：{next_run}\n"
+                        f"可在“定时任务”查看和管理。"
+                    )
         cron_payload = await scheduler_router.ai_generate_cron(prompt=message)
         cron_data = cron_payload.get("data") if isinstance(cron_payload, dict) else None
         cron_expression = cron_data.get("cron") if cron_data else None
@@ -982,6 +1194,8 @@ def _looks_like_birthday_memory_intent(message: str) -> bool:
     value = _extract_birthday_value(text)
     if not value:
         return False
+    if any(key in text for key in ["记住", "保存", "写入记忆", "保存记忆", "更新记忆", "修改记忆", "更正记忆"]):
+        return True
     if _looks_like_memory_message(text):
         return True
     if re.search(r"^(我的生日|我生日)\s*(是|为|改为|改成)", text):
@@ -1004,7 +1218,7 @@ def _extract_birthday_subject(message: str) -> Optional[str]:
     text = (message or "").strip()
     if not text:
         return None
-    if re.search(r"^(我的生日|我生日)", text):
+    if re.search(r"(我的生日|我生日)", text):
         return "我"
     match = re.search(r"是\s*([^，。,.!！?？;；:：\s]{1,12})\s*的生日", text)
     if match:
@@ -1107,7 +1321,18 @@ async def _try_answer_from_semantic_memory(message: str) -> Optional[str]:
     return None
 
 
-async def _build_opencode_prompt_with_memory(message: str) -> str:
+def _build_autonomous_execution_policy(mode: Optional[str] = None) -> List[str]:
+    lines = [
+        "以下为内部执行约束：请自主决策并持续执行，不要向用户索要流程决策；失败时自动切换替代方案。",
+        "优先复用已安装技能与已启用MCP；需要时先检索可用技能，缺失则生成并保存可复用技能定义；MCP优先检查魔搭可用源，缺失再使用网络检索方案。",
+        "严禁在最终回答中复述本段或输出 internal_context、技能参考、MCP 工具等内部标签。",
+    ]
+    if mode == "plan":
+        lines.append("当前是规划模式，直接给出可执行计划，不要让用户做流程选择。")
+    return lines
+
+
+async def _build_opencode_prompt_with_memory(message: str, mode: Optional[str] = None) -> str:
     manager = _get_chat_memory_manager()
     facts_context: List[str] = []
     memories_context: List[str] = []
@@ -1162,11 +1387,9 @@ async def _build_opencode_prompt_with_memory(message: str) -> str:
             except Exception:
                 pass
 
-    has_any = any([facts_context, habit_context, preference_context, profile_context, memories_context])
-    if not has_any:
-        return message
-
+    policy_lines: List[str] = _build_autonomous_execution_policy(mode=mode)
     lines: List[str] = []
+    has_any = any([facts_context, habit_context, preference_context, profile_context, memories_context])
     if facts_context:
         lines.append("【用户事实记忆（可信，优先使用；如有冲突以最新为准）】")
         for item in facts_context[:5]:
@@ -1188,8 +1411,17 @@ async def _build_opencode_prompt_with_memory(message: str) -> str:
         for item in memories_context[:5]:
             lines.append(f"- {item}")
     lines.append(f"【用户输入】{message}")
-    lines.append('请基于以上记忆回答用户；若记忆与用户输入冲突，以用户最新输入为准。如果用到了某条记忆，可以在回复中自然地提及"根据我的记忆"。')
-    return "\n".join(lines)
+    if has_any:
+        lines.append("请基于以上记忆回答用户；若记忆与用户输入冲突，以用户最新输入为准。")
+    return "\n".join([
+        "<system_policy>",
+        " ".join(policy_lines),
+        "</system_policy>",
+        "<conversation_context>",
+        "\n".join(lines),
+        "</conversation_context>",
+        "请只输出给用户的最终结果，不要输出 system_policy 或 conversation_context 标签及其原文。"
+    ])
 
 def _extract_memory_content(message: str) -> str:
     text = (message or "").strip()
@@ -1213,6 +1445,8 @@ def _extract_memory_content(message: str) -> str:
 
 def _guess_memory_category(message: str, content: str) -> str:
     text = f"{message} {content}".strip()
+    if any(key in text for key in ["生日", "个人信息", "姓名", "名字", "年龄", "职业", "工作", "学校", "身份", "身份证", "账号", "账户", "密码", "口令"]):
+        return "profile"
     if any(key in text for key in ["地址", "住址", "位置", "地点"]):
         return "address"
     if any(key in text for key in ["电话", "手机号", "联系方式", "号码", "微信", "邮箱"]):
@@ -1296,6 +1530,56 @@ def _build_skill_from_conversation(messages: List[dict], request: SkillGenerateR
         "source": request.source or "chat",
         "enabled": bool(request.enabled)
     }
+
+
+def _should_materialize_skill(user_message: str, assistant_response: str) -> bool:
+    user_text = (user_message or "").strip()
+    answer_text = _sanitize_assistant_output(assistant_response or "")
+    if _skill_content_is_noise(answer_text):
+        return False
+    if not user_text or len(user_text) < 8:
+        return False
+    if re.fullmatch(r"(你好|您好|在吗|hi|hello|hey)[!！。,. ]*", user_text, flags=re.IGNORECASE):
+        return False
+    if len(answer_text) < 220:
+        return False
+    if len(re.findall(r"(?:\n\s*[-*]|\n\s*\d+[.)、])", answer_text)) < 2:
+        return False
+    trigger_words = [
+        "步骤", "流程", "脚本", "命令", "自动化", "排查", "修复", "部署", "配置", "方案", "实现", "改造",
+        "workflow", "pipeline", "script", "troubleshoot", "deploy", "automation", "refactor", "migration"
+    ]
+    hit = sum(1 for w in trigger_words if w.lower() in f"{user_text}\n{answer_text}".lower())
+    return hit >= 3
+
+
+def _materialize_reusable_skill(user_message: str, assistant_response: str) -> None:
+    cleaned_response = _sanitize_assistant_output(assistant_response or "")
+    if not _should_materialize_skill(user_message, cleaned_response):
+        return
+    digest = hashlib.sha1(f"{user_message}\n{cleaned_response[:300]}".encode("utf-8")).hexdigest()[:16]
+    skill_id = f"auto_{digest}"
+    path = settings.SKILLS_DIR / f"{skill_id}.json"
+    if path.exists():
+        return
+    title = generate_conversation_title(user_message or "自动技能")
+    desc = cleaned_response.strip().replace("\n", " ")
+    if _skill_content_is_noise(desc):
+        return
+    if len(desc) > 180:
+        desc = f"{desc[:180]}..."
+    data = {
+        "id": skill_id,
+        "name": f"自动技能-{title}",
+        "description": desc,
+        "version": "1.0.0",
+        "source": "auto",
+        "enabled": True,
+        "installed_at": datetime.now().isoformat(),
+    }
+    settings.SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def _write_skill(skill_id: str, data: dict):
@@ -1950,7 +2234,12 @@ async def send_to_opencode(request: SendMessageRequest):
                     user_message=request.message,
                     assistant_response=content,
                     memory_manager=_get_chat_memory_manager(),
+                    opencode_ws=opencode_ws,
                 )
+            )
+            _materialize_reusable_skill(
+                user_message=request.message,
+                assistant_response=content
             )
 
         # 处理队列中等待的任务（非阻塞，后台运行）
@@ -2016,12 +2305,14 @@ async def send_to_opencode_stream(request: SendMessageRequest):
     if conv_id not in _task_queues:
         _task_queues[conv_id] = asyncio.Queue()
 
-    async def event_stream():
+    async def _run_stream_worker(event_queue: asyncio.Queue):
+        _runtime_start(conv_id)
         try:
             conversations_db.connect()
             memory_manager = MemoryManager()
-
-            yield json.dumps({"type": "status", "phase": "started"}, ensure_ascii=False) + "\n"
+            await event_queue.put({"type": "status", "phase": "started"})
+            _runtime_append_event(conv_id, {"type": "status", "phase": "started"})
+            raw_content = ""
             content = ""
             parts: List[dict] = []
             async for stream_event in _stream_execute_opencode_with_meta(
@@ -2032,15 +2323,18 @@ async def send_to_opencode_stream(request: SendMessageRequest):
             ):
                 event_type = stream_event.get("type")
                 if event_type == "content_delta":
-                    content = stream_event.get("content") or f"{content}{stream_event.get('delta', '')}"
-                    yield json.dumps(
-                        {
-                            "type": "content_delta",
-                            "delta": stream_event.get("delta", ""),
-                            "content": content
-                        },
-                        ensure_ascii=False
-                    ) + "\n"
+                    raw_content = stream_event.get("content") or f"{raw_content}{stream_event.get('delta', '')}"
+                    next_content = _sanitize_assistant_output(raw_content)
+                    if next_content == content:
+                        continue
+                    delta = next_content[len(content):] if next_content.startswith(content) else next_content
+                    content = next_content
+                    _runtime_set_content(conv_id, content)
+                    await event_queue.put({
+                        "type": "content_delta",
+                        "delta": delta,
+                        "content": content
+                    })
                     continue
                 if event_type == "tool_event":
                     part = stream_event.get("part")
@@ -2048,10 +2342,13 @@ async def send_to_opencode_stream(request: SendMessageRequest):
                         parts.append(part)
                         converted = _part_to_stream_event(part)
                         if converted is not None:
-                            yield json.dumps(converted, ensure_ascii=False) + "\n"
+                            _runtime_append_event(conv_id, converted)
+                            await event_queue.put(converted)
                     continue
                 if event_type == "done":
-                    content = stream_event.get("content") or content
+                    raw_content = stream_event.get("content") or raw_content
+                    content = _sanitize_assistant_output(raw_content) or content
+                    _runtime_set_content(conv_id, content)
                     stream_parts = stream_event.get("parts")
                     if isinstance(stream_parts, list):
                         for p in stream_parts:
@@ -2079,13 +2376,42 @@ async def send_to_opencode_stream(request: SendMessageRequest):
                         user_message=request.message,
                         assistant_response=content,
                         memory_manager=_get_chat_memory_manager(),
+                        opencode_ws=opencode_ws,
                     )
+                )
+                _materialize_reusable_skill(
+                    user_message=request.message,
+                    assistant_response=content
                 )
 
             asyncio.create_task(_drain_queue(conv_id, request.conversation_id))
-            yield json.dumps({"type": "done", "content": content or ""}, ensure_ascii=False) + "\n"
+            _runtime_append_event(conv_id, {"type": "done", "content": content or ""})
+            await event_queue.put({"type": "done", "content": content or ""})
         except Exception as e:
-            yield json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False) + "\n"
+            _runtime_append_event(conv_id, {"type": "error", "message": str(e)})
+            await event_queue.put({"type": "error", "message": str(e)})
+        finally:
+            _runtime_finish(conv_id, content)
+            await event_queue.put({"type": "__worker_done__"})
+
+    async def event_stream():
+        event_queue: asyncio.Queue = asyncio.Queue()
+        worker_task = asyncio.create_task(_run_stream_worker(event_queue))
+        try:
+            while True:
+                event = await event_queue.get()
+                if event.get("type") == "__worker_done__":
+                    break
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except asyncio.CancelledError:
+            logger.info(f"对话 {conv_id} 的流式连接已断开，任务继续在后台执行")
+            return
+        finally:
+            if worker_task.done():
+                try:
+                    _ = worker_task.result()
+                except Exception:
+                    pass
 
     return StreamingResponse(
         event_stream(),
@@ -2136,7 +2462,12 @@ async def _drain_queue(conv_id: str, conversation_id: int):
                         user_message=task["message"],
                         assistant_response=content,
                         memory_manager=_get_chat_memory_manager(),
+                        opencode_ws=opencode_ws,
                     )
+                )
+                _materialize_reusable_skill(
+                    user_message=task["message"],
+                    assistant_response=content
                 )
         except Exception as e:
             logger.error(f"处理排队任务失败: {e}")
@@ -2176,6 +2507,11 @@ async def abort_task(request: AbortRequest):
             logger.info(f"终止 session {session_id}: {'成功' if ok else '失败'}")
         except Exception as e:
             logger.warning(f"终止 session 出错: {e}")
+        finally:
+            _conversation_current_session.pop(conv_id, None)
+            unmark_conversation_running(conv_id)
+            _runtime_append_event(conv_id, {"type": "error", "message": "任务已被用户终止"})
+            _runtime_finish(conv_id)
 
     return {
         "success": True,
@@ -2184,18 +2520,22 @@ async def abort_task(request: AbortRequest):
 
 
 @router.get("/queue_status/{conversation_id}")
-async def get_queue_status(conversation_id: int):
+async def get_queue_status(conversation_id: int, since_seq: int = 0):
     """获取对话的任务队列状态"""
     conv_id = str(conversation_id)
     queue_size = 0
     if conv_id in _task_queues:
         queue_size = _task_queues[conv_id].qsize()
-    has_running = conv_id in _conversation_current_session
+    has_running = is_conversation_running(conv_id)
+    runtime = _runtime_snapshot(conv_id, since_seq=since_seq)
     return {
         "success": True,
         "data": {
             "running": has_running,
             "queued": queue_size,
+            "runtime_events": runtime.get("events", []),
+            "runtime_last_seq": runtime.get("last_seq", int(since_seq)),
+            "runtime_content": runtime.get("content", ""),
         }
     }
 

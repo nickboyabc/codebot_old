@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 import MemoryView from '@/views/Memory.vue'
 import ActiveMemoriesView from '@/components/ActiveMemories.vue'
+import MemorySearchView from '@/components/MemorySearch.vue'
 import ArchivedMemoriesView from '@/components/ArchivedMemories.vue'
 import BackupRestoreView from '@/components/BackupRestore.vue'
 import MemoryConfigView from '@/components/MemoryConfig.vue'
@@ -29,6 +30,11 @@ const routes = [
         path: 'active',
         name: 'ActiveMemories',
         component: ActiveMemoriesView
+      },
+      {
+        path: 'search',
+        name: 'MemorySearch',
+        component: MemorySearchView
       },
       {
         path: 'archived',

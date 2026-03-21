@@ -14,7 +14,26 @@ from datetime import datetime
 # key: conversation_id (str), value: asyncio.Queue of coroutines
 _conversation_queues: dict = {}
 _conversation_current_session: dict = {}  # key: conversation_id -> current session_id
+_conversation_running_counts: dict = {}  # key: conversation_id -> running task count
 _queue_lock = asyncio.Lock()
+
+
+def mark_conversation_running(conversation_id: str):
+    conv_id = str(conversation_id)
+    _conversation_running_counts[conv_id] = int(_conversation_running_counts.get(conv_id, 0)) + 1
+
+
+def unmark_conversation_running(conversation_id: str):
+    conv_id = str(conversation_id)
+    next_count = int(_conversation_running_counts.get(conv_id, 0)) - 1
+    if next_count > 0:
+        _conversation_running_counts[conv_id] = next_count
+    else:
+        _conversation_running_counts.pop(conv_id, None)
+
+
+def is_conversation_running(conversation_id: str) -> bool:
+    return int(_conversation_running_counts.get(str(conversation_id), 0)) > 0
 
 
 class TaskResult:
@@ -246,6 +265,35 @@ class OpenCodeClient:
             logger.warning(f"删除 session 失败: {e}")
             return False
 
+    async def _create_session(self, client: httpx.AsyncClient, workspace: Optional[str] = None) -> str:
+        session_body: dict = {}
+        session_response = await client.post(
+            f"{self.base_url}/session",
+            params={"directory": workspace} if workspace else None,
+            json=session_body if session_body else None
+        )
+        session_response.raise_for_status()
+        session_id = session_response.json().get("id")
+        if not session_id:
+            raise ValueError("OpenCode 会话创建失败")
+        return session_id
+
+    async def _resolve_session_id(
+        self,
+        client: httpx.AsyncClient,
+        conversation_id: Optional[str] = None,
+        workspace: Optional[str] = None
+    ) -> str:
+        if conversation_id:
+            conv_id = str(conversation_id)
+            existing = _conversation_current_session.get(conv_id)
+            if isinstance(existing, str) and existing:
+                return existing
+            created = await self._create_session(client=client, workspace=workspace)
+            _conversation_current_session[conv_id] = created
+            return created
+        return await self._create_session(client=client, workspace=workspace)
+
     async def execute_task(
         self,
         prompt: str,
@@ -271,30 +319,34 @@ class OpenCodeClient:
         """
         await self.ensure_connected()
 
+        conv_id = str(conversation_id) if conversation_id is not None else None
+        if conv_id:
+            mark_conversation_running(conv_id)
         try:
             client = await self._get_client()
-            session_body: dict = {}
-            session_response = await client.post(
-                f"{self.base_url}/session",
-                params={"directory": workspace} if workspace else None,
-                json=session_body if session_body else None
+            session_id = await self._resolve_session_id(
+                client=client,
+                conversation_id=conversation_id,
+                workspace=workspace
             )
-            session_response.raise_for_status()
-            session_id = session_response.json().get("id")
-            if not session_id:
-                raise ValueError("OpenCode 会话创建失败")
-
-            # 追踪当前 session_id，供 abort 使用
-            if conversation_id:
-                _conversation_current_session[str(conversation_id)] = session_id
-
             payload = self._build_prompt_payload(prompt=prompt, model=model, mode=mode)
-            message_response = await client.post(
-                f"{self.base_url}/session/{session_id}/message",
-                json=payload,
-                timeout=timeout
-            )
-            message_response.raise_for_status()
+            try:
+                message_response = await client.post(
+                    f"{self.base_url}/session/{session_id}/message",
+                    json=payload,
+                    timeout=timeout
+                )
+                message_response.raise_for_status()
+            except Exception:
+                session_id = await self._create_session(client=client, workspace=workspace)
+                if conversation_id:
+                    _conversation_current_session[str(conversation_id)] = session_id
+                message_response = await client.post(
+                    f"{self.base_url}/session/{session_id}/message",
+                    json=payload,
+                    timeout=timeout
+                )
+                message_response.raise_for_status()
             data = message_response.json()
             parts = data.get("parts", []) if isinstance(data, dict) else []
             content = "".join([p.get("text", "") for p in parts if isinstance(p, dict) and p.get("type") == "text"])
@@ -311,9 +363,8 @@ class OpenCodeClient:
                 error=str(e)
             )
         finally:
-            # 清除 session 追踪
-            if conversation_id:
-                _conversation_current_session.pop(str(conversation_id), None)
+            if conv_id:
+                unmark_conversation_running(conv_id)
 
     async def execute_task_stream(
         self,
@@ -327,19 +378,16 @@ class OpenCodeClient:
         await self.ensure_connected()
         final_parts: List[dict] = []
         final_content = ""
+        conv_id = str(conversation_id) if conversation_id is not None else None
+        if conv_id:
+            mark_conversation_running(conv_id)
         try:
             client = await self._get_client()
-            session_response = await client.post(
-                f"{self.base_url}/session",
-                params={"directory": workspace} if workspace else None,
+            session_id = await self._resolve_session_id(
+                client=client,
+                conversation_id=conversation_id,
+                workspace=workspace
             )
-            session_response.raise_for_status()
-            session_id = session_response.json().get("id")
-            if not session_id:
-                raise ValueError("OpenCode 会话创建失败")
-
-            if conversation_id:
-                _conversation_current_session[str(conversation_id)] = session_id
 
             payload = self._build_prompt_payload(prompt=prompt, model=model, mode=mode)
 
@@ -356,7 +404,16 @@ class OpenCodeClient:
                     timeout=30
                 )
                 if prompt_resp.status_code not in (200, 202, 204):
-                    raise RuntimeError(f"prompt_async 失败: HTTP {prompt_resp.status_code}")
+                    session_id = await self._create_session(client=client, workspace=workspace)
+                    if conversation_id:
+                        _conversation_current_session[str(conversation_id)] = session_id
+                    prompt_resp = await client.post(
+                        f"{self.base_url}/session/{session_id}/prompt_async",
+                        json=payload,
+                        timeout=30
+                    )
+                    if prompt_resp.status_code not in (200, 202, 204):
+                        raise RuntimeError(f"prompt_async 失败: HTTP {prompt_resp.status_code}")
 
                 part_buffers: Dict[str, str] = {}
                 assistant_message_id: Optional[str] = None
@@ -500,8 +557,8 @@ class OpenCodeClient:
             logger.error(f"流式任务执行失败：{e}")
             yield {"type": "error", "error": str(e)}
         finally:
-            if conversation_id:
-                _conversation_current_session.pop(str(conversation_id), None)
+            if conv_id:
+                unmark_conversation_running(conv_id)
     
     async def stream_task(
         self,

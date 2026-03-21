@@ -175,16 +175,23 @@ async def lifespan(app: FastAPI):
     )
     await scheduler_router.scheduler.start()
     
-    # 7. 自动启动 OpenCode Server
-    if app_config.opencode.auto_start:
+    should_auto_start = bool(app_config.opencode.auto_start or os.environ.get("CODEBOT_DATA_DIR"))
+    if should_auto_start:
         parsed = urlparse(app_config.opencode.server_url)
-        preferred_port = parsed.port or 1120
-        actual_port = await start_opencode_server(preferred_port)
+        configured_port = parsed.port or 1120
+        candidate_ports = []
+        for p in [1120, configured_port, 4096]:
+            if p not in candidate_ports:
+                candidate_ports.append(p)
+        actual_port = 0
+        for port in candidate_ports:
+            actual_port = await start_opencode_server(port)
+            if actual_port:
+                break
         if actual_port:
-            # 若实际端口与配置不同（自动切换了空闲端口），更新运行时 URL
-            if actual_port != preferred_port:
-                new_url = f"http://127.0.0.1:{actual_port}"
-                logger.info(f"OpenCode Server 使用了不同端口，更新运行时 URL: {new_url}")
+            new_url = f"http://127.0.0.1:{actual_port}"
+            if opencode_ws.base_url != new_url:
+                logger.info(f"OpenCode Server 运行地址: {new_url}")
                 opencode_ws.base_url = new_url
                 chat.opencode_ws.base_url = new_url
         else:

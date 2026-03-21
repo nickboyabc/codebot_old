@@ -32,7 +32,7 @@
       <el-divider content-position="left">搜索行为</el-divider>
       <el-form-item label="归档记忆参与手动搜索">
         <el-switch v-model="config.show_archived_in_search" />
-        <span class="hint">开启后，在"搜索记忆"界面可检索到已归档的记忆（AI 聊天自动调用不受此开关影响）</span>
+        <span class="hint">开启后，在“搜索记忆”标签页可检索到已归档记忆（AI 聊天自动调用不受此开关影响）</span>
       </el-form-item>
 
       <!-- ── 自动整理 ── -->
@@ -42,6 +42,10 @@
         <span class="hint">开启后，每天在指定时间自动对记忆进行 AI 优化（合并重复、补全描述、修正矛盾）</span>
       </el-form-item>
       <template v-if="config.organize_enabled">
+        <el-form-item label="整理聊天记录">
+          <el-switch v-model="config.organize_chat_enabled" />
+          <span class="hint">开启后，自动整理会额外扫描新增聊天记录，并联动补记忆/任务/技能沉淀</span>
+        </el-form-item>
         <el-form-item label="整理时间">
           <el-time-picker
             v-model="organizeTimeDate"
@@ -103,6 +107,7 @@ const config = ref({
   similarity_threshold: 0.7,
   show_archived_in_search: true,
   organize_enabled: false,
+  organize_chat_enabled: true,
   organize_time: '03:00',
   organize_last_run: null,
 })

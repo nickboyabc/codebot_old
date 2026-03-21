@@ -20,6 +20,20 @@ _opencode_server_process: Optional[subprocess.Popen] = None
 
 
 def _find_opencode_command() -> Optional[List[str]]:
+    configured_path = os.environ.get("CODEBOT_OPENCODE_PATH", "").strip()
+    if configured_path:
+        configured = Path(configured_path)
+        candidates = [configured]
+        if configured.is_dir():
+            candidates.extend([
+                configured / "opencode.exe",
+                configured / "opencode",
+            ])
+        for p in candidates:
+            if p.exists():
+                logger.info(f"使用配置的 OpenCode 路径: {p}")
+                return [str(p)]
+
     # 1. Check for a bundled binary shipped alongside the packaged app.
     #    Electron sets CODEBOT_RESOURCES_DIR to process.resourcesPath.
     resources_dir = os.environ.get("CODEBOT_RESOURCES_DIR", "").strip()
@@ -32,6 +46,18 @@ def _find_opencode_command() -> Optional[List[str]]:
             if p.exists():
                 logger.info(f"使用打包内置 OpenCode: {p}")
                 return [str(p)]
+
+    repo_root = Path(__file__).resolve().parents[2]
+    dev_candidates = [
+        repo_root / "electron" / "vendor" / "opencode" / "opencode.exe",
+        repo_root / "electron" / "vendor" / "opencode" / "opencode",
+        repo_root / "vendor" / "opencode" / "opencode.exe",
+        repo_root / "vendor" / "opencode" / "opencode",
+    ]
+    for p in dev_candidates:
+        if p.exists():
+            logger.info(f"使用项目内置 OpenCode: {p}")
+            return [str(p)]
 
     # 2. Fall back to system PATH
     for name in ["opencode", "opencode-ai"]:
@@ -163,19 +189,6 @@ async def check_and_install_opencode() -> bool:
     return await install_opencode()
 
 
-def _find_free_port(start: int = 1120, retries: int = 10) -> Optional[int]:
-    """从 start 开始查找可用端口，最多尝试 retries 次。"""
-    for offset in range(retries):
-        port = start + offset
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("127.0.0.1", port))
-                return port
-        except OSError:
-            continue
-    return None
-
-
 async def start_opencode_server(port: int = 1120) -> int:
     """启动 OpenCode Server，返回实际监听的端口号（失败返回 0）。"""
     try:
@@ -187,15 +200,10 @@ async def start_opencode_server(port: int = 1120) -> int:
             logger.info(f"OpenCode Server 已在运行 ({base_url})")
             return port
 
-        # 2. 若指定端口被其他进程占用，自动寻找空闲端口
+        # 2. 若指定端口被其他进程占用，直接返回失败，由上层决定下一候选端口
         if _is_port_open("127.0.0.1", port):
-            logger.warning(f"端口 {port} 已被非 OpenCode 进程占用，尝试寻找空闲端口...")
-            free_port = _find_free_port(port + 1)
-            if free_port is None:
-                logger.error("未找到可用端口，无法启动 OpenCode Server")
-                return 0
-            logger.info(f"将使用端口 {free_port} 启动 OpenCode Server")
-            port = free_port
+            logger.warning(f"端口 {port} 已被非 OpenCode 进程占用，跳过该端口")
+            return 0
 
         command = _find_opencode_command()
         if not command:
@@ -260,5 +268,3 @@ if __name__ == "__main__":
             print("❌ OpenCode 安装失败")
     
     asyncio.run(main())
-
-

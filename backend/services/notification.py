@@ -12,6 +12,8 @@ import hmac
 import hashlib
 import time
 import platform
+from email.utils import parseaddr, formataddr
+from email.header import Header
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -77,23 +79,28 @@ class NotificationService:
                 message = "任务已完成"
         message = f"{message}\n\n任务ID: {task.id}\n执行时间: {now_text}"
         
-        # 发送到所有配置的渠道
+        task_channels = {str(ch).strip().lower() for ch in (task.notify_channels or []) if str(ch).strip()}
+        if not task_channels or task_channels == {"app"}:
+            task_channels = {"app", "desktop", "lark", "email"}
+
         tasks = []
-        
-        if self.config.app_enabled:
+        if self.config.app_enabled and "app" in task_channels:
             tasks.append(self._send_app_notification(title, message, task.id))
         
-        if self.config.desktop_enabled:
+        if self.config.desktop_enabled and "desktop" in task_channels:
             tasks.append(self._send_desktop_notification(title, message))
         
-        if self.config.lark_enabled:
+        if self.config.lark_enabled and "lark" in task_channels:
             tasks.append(self._send_lark_notification(title, message))
         
-        if self.config.email_enabled:
+        if self.config.email_enabled and "email" in task_channels:
             tasks.append(self._send_email_notification(title, message))
         
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for item in results:
+                if isinstance(item, Exception):
+                    logger.error(f"通知发送异常: {item}")
     
     async def _send_app_notification(
         self,
@@ -241,15 +248,27 @@ class NotificationService:
             logger.warning("邮箱配置不完整")
             return
         
-        recipients = self.config.email_to or [self.config.email_from]
+        recipients = [r.strip() for r in (self.config.email_to or []) if str(r).strip()]
+        if not recipients:
+            fallback = (self.config.email_from or self.config.email_username or "").strip()
+            if fallback:
+                recipients = [fallback]
         if not recipients:
             logger.warning("没有收件人")
             return
         
         def send_email():
+            sender_display, sender_addr = self._normalize_email_address(self.config.email_from or self.config.email_username)
+            normalized_recipients = []
+            recipient_headers = []
+            for raw in recipients:
+                display, addr = self._normalize_email_address(raw)
+                normalized_recipients.append(addr)
+                recipient_headers.append(self._format_email_header(display, addr))
+
             msg = MIMEMultipart()
-            msg['From'] = self.config.email_from or self.config.email_username
-            msg['To'] = ', '.join(recipients)
+            msg['From'] = self._format_email_header(sender_display, sender_addr)
+            msg['To'] = ', '.join(recipient_headers)
             msg['Subject'] = f"[Codebot] {title}"
             body = f"""
 <html>
@@ -265,21 +284,70 @@ class NotificationService:
 </html>
             """
             msg.attach(MIMEText(body, 'html', 'utf-8'))
-            if self.config.email_smtp_port == 465:
-                with smtplib.SMTP_SSL(self.config.email_smtp_host, self.config.email_smtp_port) as server:
-                    server.login(self.config.email_username, self.config.email_password)
-                    server.send_message(msg)
-            else:
-                with smtplib.SMTP(self.config.email_smtp_host, self.config.email_smtp_port) as server:
-                    server.starttls()
-                    server.login(self.config.email_username, self.config.email_password)
-                    server.send_message(msg)
+            try:
+                if self.config.email_smtp_port == 465:
+                    with smtplib.SMTP_SSL(self.config.email_smtp_host, self.config.email_smtp_port) as server:
+                        server.ehlo()
+                        server.login(self.config.email_username, self.config.email_password)
+                        server.sendmail(sender_addr, normalized_recipients, msg.as_string())
+                else:
+                    with smtplib.SMTP(self.config.email_smtp_host, self.config.email_smtp_port) as server:
+                        server.ehlo()
+                        server.starttls()
+                        server.ehlo()
+                        server.login(self.config.email_username, self.config.email_password)
+                        server.sendmail(sender_addr, normalized_recipients, msg.as_string())
+            except smtplib.SMTPNotSupportedError as exc:
+                if "SMTPUTF8" in str(exc).upper():
+                    raise ValueError("邮箱地址包含非 ASCII 字符，当前 SMTP 服务器不支持 SMTPUTF8，请改用纯英文邮箱地址。") from exc
+                raise
         
         try:
             await asyncio.to_thread(send_email)
             logger.info("邮件通知发送成功")
         except Exception as e:
             logger.error(f"发送邮件通知失败：{e}")
+            raise
+
+    async def send_test_email(self, recipient: Optional[str] = None):
+        target = (recipient or "").strip()
+        title = "📮 Codebot 邮箱配置测试"
+        message = "这是来自 Codebot 的测试邮件。若你收到此邮件，说明邮箱通知配置可用。"
+        backup_to = list(self.config.email_to or [])
+        if target:
+            self.config.email_to = [target]
+        try:
+            await self._send_email_notification(title, message)
+        finally:
+            self.config.email_to = backup_to
+
+    def _normalize_email_address(self, raw: str) -> tuple[str, str]:
+        display, addr = parseaddr(str(raw or "").strip())
+        addr = str(addr or "").strip()
+        if not addr:
+            raise ValueError("邮箱地址为空，请先在邮箱配置中填写有效地址。")
+        if "@" not in addr:
+            raise ValueError(f"邮箱地址格式不正确：{addr}")
+        local_part, domain_part = addr.rsplit("@", 1)
+        local_part = local_part.strip()
+        domain_part = domain_part.strip()
+        if not local_part or not domain_part:
+            raise ValueError(f"邮箱地址格式不正确：{addr}")
+        try:
+            local_part.encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise ValueError(f"邮箱地址本地部分不支持非 ASCII 字符：{addr}") from exc
+        try:
+            domain_ascii = domain_part.encode("idna").decode("ascii")
+        except Exception as exc:
+            raise ValueError(f"邮箱地址域名格式不正确：{addr}") from exc
+        return display.strip(), f"{local_part}@{domain_ascii}"
+
+    def _format_email_header(self, display: str, addr: str) -> str:
+        name = str(display or "").strip()
+        if not name:
+            return addr
+        return formataddr((str(Header(name, "utf-8")), addr))
     
     async def get_notifications(
         self,

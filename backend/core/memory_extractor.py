@@ -6,6 +6,7 @@
 """
 import re
 import asyncio
+import json
 from typing import List, Optional, Tuple
 from loguru import logger
 
@@ -52,6 +53,13 @@ _EXTRACTION_RULES: List[Tuple[re.Pattern, str]] = [
 # 跳过过短或无意义的提取结果
 _MIN_CONTENT_LEN = 4
 _SKIP_KEYWORDS = {"一下", "这里", "那里", "这个", "那个", "什么", "怎么"}
+_AI_MAX_ITEMS = 5
+_AI_EXTRACT_SYSTEM_PROMPT = """你是记忆抽取助手。请从用户消息中提取“值得长期记住”的信息，规则：
+1) 仅提取稳定或高价值信息：偏好、习惯、身份信息、联系方式、地址、长期计划、明确备忘。
+2) 忽略一次性闲聊、无关寒暄、临时状态。
+3) 分类只允许：habit, preference, profile, note, contact, address。
+4) 返回 JSON 数组，每项为 {"content":"...", "category":"..."}。
+5) 不要输出任何解释文字。"""
 
 
 def _clean(text: str) -> str:
@@ -110,6 +118,7 @@ async def extract_and_save(
     memory_manager,
     *,
     existing_contents: Optional[List[str]] = None,
+    opencode_ws=None,
 ) -> int:
     """
     从一轮对话（用户消息 + AI 回复）中提取记忆并保存。
@@ -127,6 +136,10 @@ async def extract_and_save(
         return 0
 
     candidates = _extract_candidates(user_message)
+    ai_candidates = await _extract_candidates_by_ai(user_message, assistant_response, opencode_ws)
+    for content, category in ai_candidates:
+        if (content, category) not in candidates:
+            candidates.append((content, category))
     if not candidates:
         return 0
 
@@ -142,7 +155,7 @@ async def extract_and_save(
             await memory_manager.save_long_term_memory(
                 content=content,
                 category=category,
-                metadata={"source": "auto_extract", "raw": user_message[:200]},
+                metadata={"source": "auto_extract", "raw": user_message[:200], "assistant": (assistant_response or "")[:200]},
             )
             saved += 1
             logger.debug(f"[memory_extractor] 自动保存记忆 [{category}]: {content}")
@@ -158,6 +171,7 @@ async def extract_and_save_background(
     user_message: str,
     assistant_response: str,
     memory_manager,
+    opencode_ws=None,
 ) -> None:
     """
     后台异步包装器：捕获所有异常，不影响主流程。
@@ -177,6 +191,61 @@ async def extract_and_save_background(
             assistant_response=assistant_response,
             memory_manager=memory_manager,
             existing_contents=existing,
+            opencode_ws=opencode_ws,
         )
     except Exception as exc:
         logger.warning(f"[memory_extractor] 后台提取任务异常: {exc}")
+
+
+async def _extract_candidates_by_ai(
+    user_message: str,
+    assistant_response: str,
+    opencode_ws=None,
+) -> List[Tuple[str, str]]:
+    if opencode_ws is None or not getattr(opencode_ws, "connected", False):
+        return []
+    payload = json.dumps(
+        {
+            "user_message": user_message,
+            "assistant_response": assistant_response or "",
+            "max_items": _AI_MAX_ITEMS,
+        },
+        ensure_ascii=False,
+    )
+    try:
+        session_id = f"memory_extract_{int(asyncio.get_event_loop().time() * 1000)}"
+        response = await opencode_ws.send_message(
+            session_id=session_id,
+            message=payload,
+            system_prompt=_AI_EXTRACT_SYSTEM_PROMPT,
+        )
+        if not response:
+            return []
+        match = re.search(r"\[[\s\S]*\]", response)
+        if not match:
+            return []
+        data = json.loads(match.group(0))
+        if not isinstance(data, list):
+            return []
+        out: List[Tuple[str, str]] = []
+        seen = set()
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            content = _clean(str(item.get("content") or ""))
+            category = str(item.get("category") or "").strip()
+            if not content or len(content) < _MIN_CONTENT_LEN:
+                continue
+            if category not in MEMORY_CATEGORIES:
+                continue
+            key = (content, category)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+            if len(out) >= _AI_MAX_ITEMS:
+                break
+        return out
+    except Exception as exc:
+        logger.warning(f"[memory_extractor] AI 提取失败，回退规则提取: {exc}")
+        return []

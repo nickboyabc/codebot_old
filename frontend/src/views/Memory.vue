@@ -2,6 +2,7 @@
   <div class="memory-view">
     <el-tabs v-model="activeTab">
       <el-tab-pane label="活跃记忆" name="active" />
+      <el-tab-pane label="搜索记忆" name="search" />
       <el-tab-pane label="归档记忆" name="archived" />
       <el-tab-pane label="备份恢复" name="backup" />
       <el-tab-pane label="配置" name="config" />
@@ -21,6 +22,7 @@ const router = useRouter()
 
 const tabRoutes = {
   active: '/memory/active',
+  search: '/memory/search',
   archived: '/memory/archived',
   backup: '/memory/backup',
   config: '/memory/config'

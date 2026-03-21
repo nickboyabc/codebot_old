@@ -87,7 +87,7 @@
       <el-main>
         <div class="chat-main" v-if="currentConversationId">
           <!-- 消息列表 -->
-          <div class="message-list" ref="messageListRef">
+          <div class="message-list" ref="messageListRef" @scroll.passive="onMessageListScroll">
             <template v-for="msg in messages" :key="msg.id">
               <!-- 工具步骤事件：独立气泡展示，不显示头像 -->
               <div v-if="msg.role === 'event'" class="message event-message">
@@ -108,24 +108,26 @@
                   <div v-else class="message-text markdown-body" v-html="renderMarkdown(msg.content)"></div>
                   <div class="message-footer">
                     <div class="message-time">{{ formatDate(msg.created_at) }}</div>
-                    <el-button 
-                      class="copy-btn" 
-                      link 
-                      size="small" 
-                      @click="copyMessage(msg.content)"
-                      title="复制内容"
-                    >
-                      <el-icon><CopyDocument /></el-icon>
-                    </el-button>
-                    <el-button
-                      class="undo-btn"
-                      link
-                      size="small"
-                      @click="undoFromMessage(msg)"
-                      title="撤销此消息及之后的所有消息"
-                    >
-                      <el-icon><Delete /></el-icon>
-                    </el-button>
+                    <div class="message-actions">
+                      <el-button 
+                        class="copy-btn" 
+                        link 
+                        size="small" 
+                        @click="copyMessage(msg.content)"
+                        title="复制内容"
+                      >
+                        <el-icon><CopyDocument /></el-icon>
+                      </el-button>
+                      <el-button
+                        class="undo-btn"
+                        link
+                        size="small"
+                        @click="undoFromMessage(msg)"
+                        title="撤销此消息及之后的所有消息"
+                      >
+                        <el-icon><Delete /></el-icon>
+                      </el-button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -398,7 +400,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Grid, Delete, Refresh, VideoPlay, VideoPause, Upload, Close, Document, Paperclip, Picture } from '@element-plus/icons-vue'
 import axios from 'axios'
@@ -485,6 +487,17 @@ watch(agentMode, (val) => { localStorage.setItem(AGENT_MODE_KEY, val) })
 // 终止任务
 const aborting = ref(false)
 const queuedCount = ref(0)
+const serverRunningStatus = ref({})
+const queueStatusSyncing = ref({})
+const runtimeSeqByConversation = ref({})
+const runtimeEventSeqSeen = ref({})
+const runtimeAssistantIdByConversation = ref({})
+const activeStreamByConversation = ref({})
+const runtimeReloadDoneByConversation = ref({})
+let queueStatusTimer = null
+const shouldAutoScroll = ref(true)
+const nowTick = ref(Date.now())
+let timeRefreshTimer = null
 
 // ── 附件管理 ─────────────────────────────────────────────────────────────────
 const attachedFiles = ref([])  // [{name, type, content, is_text}]
@@ -933,6 +946,152 @@ const decrementLoading = (conversationId) => {
   loadingCounts.value = updated
 }
 
+const setConversationLoadingState = (conversationId, running) => {
+  const key = Number(conversationId)
+  if (!key) return
+  const updated = { ...loadingCounts.value }
+  if (running) {
+    updated[key] = Math.max(1, Number(updated[key] || 0))
+  } else {
+    delete updated[key]
+  }
+  loadingCounts.value = updated
+}
+
+const ensureRuntimeAssistant = (conversationId) => {
+  if (currentConversationId.value !== conversationId) return null
+  const knownId = runtimeAssistantIdByConversation.value[conversationId]
+  if (knownId) {
+    const found = messages.value.find((m) => m.id === knownId)
+    if (found) return found
+  }
+  const msg = {
+    id: `runtime-assistant-${conversationId}`,
+    role: 'assistant',
+    content: '',
+    streaming: true,
+    created_at: new Date().toISOString()
+  }
+  messages.value.push(msg)
+  runtimeAssistantIdByConversation.value = {
+    ...runtimeAssistantIdByConversation.value,
+    [conversationId]: msg.id
+  }
+  return msg
+}
+
+const applyRuntimeEvents = (conversationId, events, runtimeContent, running) => {
+  if (currentConversationId.value !== conversationId) return
+  const seen = new Set(runtimeEventSeqSeen.value[conversationId] || [])
+  let assistantMsg = null
+  for (const event of (events || [])) {
+    const seq = Number(event?.seq || 0)
+    if (seq > 0 && seen.has(seq)) continue
+    if (seq > 0) seen.add(seq)
+    if (event?.type === 'tool_event' || event?.type === 'meta_event') {
+      const eventMsg = {
+        id: `runtime-event-${conversationId}-${seq || Date.now()}`,
+        role: 'event',
+        event: event,
+        created_at: event?.created_at || new Date().toISOString()
+      }
+      if (assistantMsg) {
+        const idx = messages.value.findIndex((m) => m.id === assistantMsg.id)
+        if (idx >= 0) {
+          messages.value.splice(idx, 0, eventMsg)
+        } else {
+          messages.value.push(eventMsg)
+        }
+      } else {
+        messages.value.push(eventMsg)
+      }
+      continue
+    }
+    if (event?.type === 'done' && assistantMsg) {
+      assistantMsg.content = event.content || runtimeContent || assistantMsg.content
+      assistantMsg.streaming = false
+      continue
+    }
+    if (event?.type === 'error' && assistantMsg) {
+      assistantMsg.content = event.message || '执行失败'
+      assistantMsg.streaming = false
+    }
+    if (running && (event?.type === 'done' || event?.type === 'error') && !assistantMsg) {
+      assistantMsg = ensureRuntimeAssistant(conversationId)
+      if (!assistantMsg) continue
+      if (event?.type === 'done') {
+        assistantMsg.content = event.content || runtimeContent || assistantMsg.content
+        assistantMsg.streaming = false
+      } else {
+        assistantMsg.content = event.message || '执行失败'
+        assistantMsg.streaming = false
+      }
+    }
+  }
+  runtimeEventSeqSeen.value = {
+    ...runtimeEventSeqSeen.value,
+    [conversationId]: Array.from(seen).slice(-300)
+  }
+  if (running && ((typeof runtimeContent === 'string' && runtimeContent) || running)) {
+    assistantMsg = assistantMsg || ensureRuntimeAssistant(conversationId)
+  }
+  if (assistantMsg) {
+    if (typeof runtimeContent === 'string' && runtimeContent) assistantMsg.content = runtimeContent
+    assistantMsg.streaming = Boolean(running)
+  }
+  nextTick(() => scrollToBottom())
+}
+
+const fetchQueueStatus = async (conversationId, options = {}) => {
+  const key = Number(conversationId)
+  if (!key) return
+  if (queueStatusSyncing.value[key]) return
+  queueStatusSyncing.value = { ...queueStatusSyncing.value, [key]: true }
+  try {
+    const sinceSeq = Number(runtimeSeqByConversation.value[key] || 0)
+    const response = await axios.get(`/api/chat/queue_status/${key}`, { params: { since_seq: sinceSeq } })
+    const data = response.data?.data || {}
+    const running = Boolean(data.running)
+    const queued = Number(data.queued || 0)
+    const runtimeEvents = Array.isArray(data.runtime_events) ? data.runtime_events : []
+    const runtimeLastSeq = Number(data.runtime_last_seq || sinceSeq || 0)
+    const runtimeContent = typeof data.runtime_content === 'string' ? data.runtime_content : ''
+    const hasDoneEvent = runtimeEvents.some((e) => e?.type === 'done' || e?.type === 'error')
+    const previousRunning = Boolean(serverRunningStatus.value[key])
+    serverRunningStatus.value = { ...serverRunningStatus.value, [key]: running }
+    runtimeSeqByConversation.value = { ...runtimeSeqByConversation.value, [key]: runtimeLastSeq }
+    if (currentConversationId.value === key) {
+      queuedCount.value = queued
+    }
+    setConversationLoadingState(key, running)
+    if (!activeStreamByConversation.value[key]) {
+      applyRuntimeEvents(key, runtimeEvents, runtimeContent, running)
+    }
+    const shouldReloadAfterRuntime = options.reloadOnFinish
+      && !running
+      && currentConversationId.value === key
+      && !activeStreamByConversation.value[key]
+      && !runtimeReloadDoneByConversation.value[key]
+      && (previousRunning || hasDoneEvent || Boolean(runtimeAssistantIdByConversation.value[key]))
+    if (shouldReloadAfterRuntime) {
+      const msgResp = await axios.get(`/api/chat/conversations/${key}/messages`)
+      messages.value = msgResp.data?.data?.items || []
+      runtimeAssistantIdByConversation.value = { ...runtimeAssistantIdByConversation.value, [key]: null }
+      runtimeEventSeqSeen.value = { ...runtimeEventSeqSeen.value, [key]: [] }
+      runtimeReloadDoneByConversation.value = { ...runtimeReloadDoneByConversation.value, [key]: true }
+      await nextTick()
+      scrollToBottom()
+    } else if (running) {
+      runtimeReloadDoneByConversation.value = { ...runtimeReloadDoneByConversation.value, [key]: false }
+    }
+  } catch (error) {
+  } finally {
+    const updated = { ...queueStatusSyncing.value }
+    delete updated[key]
+    queueStatusSyncing.value = updated
+  }
+}
+
 // 加载对话列表
 const getMostRecentConversationId = (items) => {
   if (!Array.isArray(items) || items.length === 0) return null
@@ -1014,11 +1173,16 @@ const createNewConversation = async () => {
 
 // 选择对话
 const selectConversation = async (conversationId) => {
+  shouldAutoScroll.value = true
   currentConversationId.value = conversationId
   localStorage.setItem(LAST_CONVERSATION_KEY, String(conversationId))
   try {
     const response = await axios.get(`/api/chat/conversations/${conversationId}/messages`)
     messages.value = response.data.data.items || []
+    runtimeAssistantIdByConversation.value = { ...runtimeAssistantIdByConversation.value, [conversationId]: null }
+    runtimeEventSeqSeen.value = { ...runtimeEventSeqSeen.value, [conversationId]: [] }
+    runtimeReloadDoneByConversation.value = { ...runtimeReloadDoneByConversation.value, [conversationId]: false }
+    await fetchQueueStatus(conversationId)
     await nextTick()
     scrollToBottom()
   } catch (error) {
@@ -1126,7 +1290,7 @@ const sendMessage = async () => {
       created_at: new Date().toISOString()
     })
     await nextTick()
-    scrollToBottom()
+    scrollToBottom(true)
     try {
       // Save user message to DB
       await axios.post(`/api/chat/conversations/${conversationId}/messages`, { content: displayContent })
@@ -1166,7 +1330,7 @@ const sendMessage = async () => {
 
     if (currentConversationId.value === conversationId) {
       await nextTick()
-      scrollToBottom()
+      scrollToBottom(true)
     }
 
     const assistantMessage = {
@@ -1199,59 +1363,63 @@ const sendMessage = async () => {
       })
     }
 
-    await streamChatResponse({
-      conversation_id: conversationId,
-      message: content,
-      model: selectedModel.value || null,
-      mode: agentMode.value || null,
-      attached_files: filesToSend.length > 0 ? filesToSend : null,
-    }, async (event) => {
-      if (event?.type === 'queued') {
-        queuedCount.value += 1
-        if (currentConversationId.value === conversationId) {
-          messages.value = messages.value.filter((m) => m.id !== assistantMessage.id)
-        }
-        ElMessage.info('消息已加入队列，将在当前任务完成后处理')
-        return
-      }
-      if (event?.type === 'content_delta') {
-        const delta = event.delta || ''
-        if (delta) {
-          pendingDelta += delta
-          scheduleFlush()
-        }
-        return
-      }
-      if (event?.type === 'tool_event' || event?.type === 'meta_event') {
-        if (currentConversationId.value === conversationId) {
-          // 在 assistantMessage 之前插入独立的事件气泡
-          const idx = messages.value.findIndex((m) => m.id === assistantMessage.id)
-          const eventMsg = {
-            id: Date.now() + Math.random(),
-            role: 'event',
-            event: event,
-            created_at: new Date().toISOString()
+    activeStreamByConversation.value = { ...activeStreamByConversation.value, [conversationId]: true }
+    try {
+      await streamChatResponse({
+        conversation_id: conversationId,
+        message: content,
+        model: selectedModel.value || null,
+        mode: agentMode.value || null,
+        attached_files: filesToSend.length > 0 ? filesToSend : null,
+      }, async (event) => {
+        if (event?.type === 'queued') {
+          queuedCount.value += 1
+          if (currentConversationId.value === conversationId) {
+            messages.value = messages.value.filter((m) => m.id !== assistantMessage.id)
           }
-          if (idx >= 0) {
-            messages.value.splice(idx, 0, eventMsg)
-          } else {
-            messages.value.push(eventMsg)
-          }
-          scheduleStreamScroll()
+          ElMessage.info('消息已加入队列，将在当前任务完成后处理')
+          return
         }
-        return
-      }
-      if (event?.type === 'done') {
-        flushPendingDelta()
-        assistantMessage.content = event.content || assistantMessage.content
-        assistantMessage.streaming = false
-        if (currentConversationId.value === conversationId) scheduleStreamScroll()
-        return
-      }
-      if (event?.type === 'error') {
-        throw new Error(event.message || '流式回复失败')
-      }
-    })
+        if (event?.type === 'content_delta') {
+          const delta = event.delta || ''
+          if (delta) {
+            pendingDelta += delta
+            scheduleFlush()
+          }
+          return
+        }
+        if (event?.type === 'tool_event' || event?.type === 'meta_event') {
+          if (currentConversationId.value === conversationId) {
+            const idx = messages.value.findIndex((m) => m.id === assistantMessage.id)
+            const eventMsg = {
+              id: Date.now() + Math.random(),
+              role: 'event',
+              event: event,
+              created_at: new Date().toISOString()
+            }
+            if (idx >= 0) {
+              messages.value.splice(idx, 0, eventMsg)
+            } else {
+              messages.value.push(eventMsg)
+            }
+            scheduleStreamScroll()
+          }
+          return
+        }
+        if (event?.type === 'done') {
+          flushPendingDelta()
+          assistantMessage.content = event.content || assistantMessage.content
+          assistantMessage.streaming = false
+          if (currentConversationId.value === conversationId) scheduleStreamScroll()
+          return
+        }
+        if (event?.type === 'error') {
+          throw new Error(event.message || '流式回复失败')
+        }
+      })
+    } finally {
+      activeStreamByConversation.value = { ...activeStreamByConversation.value, [conversationId]: false }
+    }
 
     queuedCount.value = Math.max(0, queuedCount.value - 1)
     await loadConversations()
@@ -1262,7 +1430,7 @@ const sendMessage = async () => {
     decrementLoading(conversationId)
     if (currentConversationId.value === conversationId) {
       await nextTick()
-      scrollToBottom()
+      scrollToBottom(true)
     }
   }
 }
@@ -1417,16 +1585,37 @@ const handleConversationCommand = async (conv, command) => {
   if (command === 'delete') { await deleteConversation(conv.id) }
 }
 
-const scrollToBottom = () => {
-  if (messageListRef.value) {
-    messageListRef.value.scrollTop = messageListRef.value.scrollHeight
-  }
+const onMessageListScroll = () => {
+  const el = messageListRef.value
+  if (!el) return
+  const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+  shouldAutoScroll.value = distance <= 80
+}
+
+const scrollToBottom = (force = false) => {
+  const el = messageListRef.value
+  if (!el) return
+  if (!force && !shouldAutoScroll.value) return
+  el.scrollTop = el.scrollHeight
+  shouldAutoScroll.value = true
 }
 
 const formatDate = (dateStr) => {
-  const date = new Date(dateStr)
+  nowTick.value
+  if (!dateStr) return ''
+  const raw = String(dateStr).trim()
+  let date = null
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(raw)) {
+    date = new Date(raw.replace(' ', 'T') + 'Z')
+  } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(raw)) {
+    date = new Date(raw + 'Z')
+  } else {
+    date = new Date(raw)
+  }
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return ''
   const now = new Date()
   const diff = now - date
+  if (diff < 0) return '刚刚'
   if (diff < 60000) return '刚刚'
   if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`
   if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`
@@ -1437,6 +1626,25 @@ onMounted(() => {
   loadConversations(true)
   loadModels()
   loadCommands()
+  queueStatusTimer = setInterval(() => {
+    if (currentConversationId.value) {
+      fetchQueueStatus(currentConversationId.value, { reloadOnFinish: true })
+    }
+  }, 2000)
+  timeRefreshTimer = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 30000)
+})
+
+onUnmounted(() => {
+  if (queueStatusTimer) {
+    clearInterval(queueStatusTimer)
+    queueStatusTimer = null
+  }
+  if (timeRefreshTimer) {
+    clearInterval(timeRefreshTimer)
+    timeRefreshTimer = null
+  }
 })
 </script>
 
@@ -1720,10 +1928,18 @@ onMounted(() => {
 
 .message-footer {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   margin-top: 4px;
   height: 20px;
+  gap: 8px;
+}
+
+.message-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
 }
 
 .copy-btn {
@@ -1748,7 +1964,7 @@ onMounted(() => {
 .message-time {
   font-size: 12px;
   color: #909399;
-  margin-top: 4px;
+  margin-right: auto;
 }
 
 .message.user .message-time {

@@ -10,15 +10,13 @@ echo.
 set "ROOT=%~dp0"
 set "VENV=%ROOT%venv"
 set "PYTHON=%VENV%\Scripts\python.exe"
-set "PIP=%VENV%\Scripts\pip.exe"
-set "PYINSTALLER=%VENV%\Scripts\pyinstaller.exe"
 
 echo [0/5] Releasing build artifacts...
 taskkill /F /IM codebot-backend.exe >nul 2>&1
 taskkill /F /IM Codebot.exe >nul 2>&1
 if exist "%ROOT%backend\dist\codebot-backend" rmdir /s /q "%ROOT%backend\dist\codebot-backend"
 if exist "%ROOT%backend\build\codebot-backend" rmdir /s /q "%ROOT%backend\build\codebot-backend"
-if exist "%ROOT%electron\dist\electron\win-unpacked" rmdir /s /q "%ROOT%electron\dist\electron\win-unpacked"
+if exist "%ROOT%electron\dist\electron_new\win-unpacked" rmdir /s /q "%ROOT%electron\dist\electron_new\win-unpacked"
 
 :: ---------------------------------------------------------------
 :: Step 1 - Create venv (if not already present)
@@ -37,15 +35,19 @@ if not exist "%PYTHON%" (
 )
 
 :: ---------------------------------------------------------------
-:: Step 2 - Install / upgrade Python dependencies
+:: Step 2 - Install Python dependencies
 :: ---------------------------------------------------------------
 echo.
 echo [2/5] Installing Python dependencies into venv...
-"%PIP%" install --upgrade pip --quiet
-"%PIP%" install pyinstaller --quiet
-"%PIP%" install -r "%ROOT%backend\requirements.txt" --quiet
+"%PYTHON%" -m pip install --disable-pip-version-check pyinstaller --quiet
+"%PYTHON%" -m pip install --disable-pip-version-check -r "%ROOT%backend\requirements.txt" --quiet
 if errorlevel 1 (
     echo ERROR: pip install failed. Check your network or requirements.txt.
+    exit /b 1
+)
+"%PYTHON%" -m PyInstaller --version >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: PyInstaller is unavailable in venv. Try deleting venv and rerun build.bat.
     exit /b 1
 )
 echo      Dependencies installed.
@@ -58,7 +60,7 @@ echo [3/5] Building Python backend with PyInstaller...
 pushd "%ROOT%backend"
 if exist "%ROOT%backend\dist_build\codebot-backend" rmdir /s /q "%ROOT%backend\dist_build\codebot-backend"
 if exist "%ROOT%backend\build_tmp2\codebot-backend" rmdir /s /q "%ROOT%backend\build_tmp2\codebot-backend"
-"%PYINSTALLER%" codebot-backend.spec --clean --noconfirm --distpath "%ROOT%backend\dist_build" --workpath "%ROOT%backend\build_tmp2"
+"%PYTHON%" -m PyInstaller codebot-backend.spec --clean --noconfirm --distpath "%ROOT%backend\dist_build" --workpath "%ROOT%backend\build_tmp2"
 if errorlevel 1 (
     popd
     echo ERROR: PyInstaller build failed. See output above.

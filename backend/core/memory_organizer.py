@@ -22,6 +22,7 @@ import re
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from loguru import logger
+from core.memory_extractor import extract_and_save
 
 
 MAX_BATCH_SIZE = 30   # 每批最多处理的记忆条数
@@ -143,6 +144,8 @@ async def organize_memories(
     summary = {
         "total": 0, "updated": 0, "archived": 0,
         "batches": 0, "used_ai": False, "finished_at": None,
+        "chat_messages_scanned": 0, "chat_memories_saved": 0,
+        "tasks_created": 0, "skills_materialized": 0,
     }
 
     try:
@@ -185,11 +188,25 @@ async def organize_memories(
                     break
                 offset += MAX_BATCH_SIZE
 
+        organize_chat_enabled = True
+        try:
+            from config import app_config
+            organize_chat_enabled = bool(getattr(app_config.memory, "organize_chat_enabled", True))
+        except Exception:
+            organize_chat_enabled = True
+
+        if organize_chat_enabled:
+            chat_stats = await _organize_from_chat_history(memory_manager, opencode_ws)
+            summary["chat_messages_scanned"] = int(chat_stats.get("scanned", 0))
+            summary["chat_memories_saved"] = int(chat_stats.get("saved_memories", 0))
+            summary["tasks_created"] = int(chat_stats.get("tasks_created", 0))
+            summary["skills_materialized"] = int(chat_stats.get("skills_materialized", 0))
         summary["finished_at"] = datetime.now().isoformat()
         logger.info(
             f"[memory_organizer] 整理完成 — 总条数: {summary['total']}, "
             f"更新: {summary['updated']}, 归档: {summary['archived']}, "
-            f"使用AI: {summary['used_ai']}"
+            f"使用AI: {summary['used_ai']}, 聊天扫描: {summary['chat_messages_scanned']}, "
+            f"新增记忆: {summary['chat_memories_saved']}, 新任务: {summary['tasks_created']}"
         )
 
         # 更新上次运行时间
@@ -251,6 +268,121 @@ async def _apply_ai_result(
 
         except Exception as item_err:
             logger.warning(f"[memory_organizer] 处理条目 {item} 时出错: {item_err}")
+
+
+def _ensure_organizer_state_table(memory_manager):
+    cursor = memory_manager.sqlite_db.cursor()
+    cursor.execute(
+        """CREATE TABLE IF NOT EXISTS memory_organizer_state (
+               state_key TEXT PRIMARY KEY,
+               state_value TEXT,
+               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+           )"""
+    )
+    memory_manager.sqlite_db.commit()
+
+
+def _get_last_processed_message_id(memory_manager) -> int:
+    _ensure_organizer_state_table(memory_manager)
+    cursor = memory_manager.sqlite_db.cursor()
+    row = cursor.execute(
+        "SELECT state_value FROM memory_organizer_state WHERE state_key = ?",
+        ("last_processed_message_id",),
+    ).fetchone()
+    if not row:
+        return 0
+    try:
+        return max(0, int(row["state_value"]))
+    except Exception:
+        return 0
+
+
+def _set_last_processed_message_id(memory_manager, message_id: int):
+    _ensure_organizer_state_table(memory_manager)
+    cursor = memory_manager.sqlite_db.cursor()
+    cursor.execute(
+        """INSERT OR REPLACE INTO memory_organizer_state (state_key, state_value, updated_at)
+           VALUES (?, ?, CURRENT_TIMESTAMP)""",
+        ("last_processed_message_id", str(int(message_id))),
+    )
+    memory_manager.sqlite_db.commit()
+
+
+async def _organize_from_chat_history(memory_manager, opencode_ws=None) -> Dict[str, int]:
+    stats = {"scanned": 0, "saved_memories": 0, "tasks_created": 0, "skills_materialized": 0}
+    try:
+        from api.routes import chat as chat_router
+    except Exception as exc:
+        logger.warning(f"[memory_organizer] 无法导入 chat 路由，跳过聊天整理: {exc}")
+        return stats
+
+    last_id = _get_last_processed_message_id(memory_manager)
+    cursor = memory_manager.sqlite_db.cursor()
+    rows = cursor.execute(
+        """SELECT id, conversation_id, role, content
+           FROM messages
+           WHERE id > ?
+           ORDER BY id ASC
+           LIMIT 2000""",
+        (last_id,),
+    ).fetchall()
+    if not rows:
+        return stats
+
+    assistant_by_conv: Dict[int, List[Dict]] = {}
+    user_rows: List[Dict] = []
+    max_id = last_id
+    for row in rows:
+        item = dict(row)
+        max_id = max(max_id, int(item["id"]))
+        conv_id = int(item["conversation_id"])
+        role = str(item.get("role") or "")
+        if role == "assistant":
+            assistant_by_conv.setdefault(conv_id, []).append(item)
+        elif role == "user":
+            user_rows.append(item)
+
+    for user_msg in user_rows:
+        stats["scanned"] += 1
+        conv_id = int(user_msg["conversation_id"])
+        user_id = int(user_msg["id"])
+        user_text = str(user_msg.get("content") or "").strip()
+        if not user_text:
+            continue
+        assistant_text = ""
+        for cand in assistant_by_conv.get(conv_id, []):
+            if int(cand["id"]) > user_id:
+                assistant_text = str(cand.get("content") or "")
+                break
+        try:
+            saved = await extract_and_save(
+                user_message=user_text,
+                assistant_response=assistant_text,
+                memory_manager=memory_manager,
+                opencode_ws=opencode_ws,
+            )
+            stats["saved_memories"] += int(saved or 0)
+        except Exception:
+            pass
+
+        try:
+            created = await chat_router._try_create_scheduled_task(user_text)
+            if created:
+                stats["tasks_created"] += 1
+        except Exception:
+            pass
+
+        try:
+            chat_router._materialize_reusable_skill(
+                user_message=user_text,
+                assistant_response=assistant_text,
+            )
+            stats["skills_materialized"] += 1
+        except Exception:
+            pass
+
+    _set_last_processed_message_id(memory_manager, max_id)
+    return stats
 
 
 # ── 后台定时循环 ─────────────────────────────────────────────────────────────

@@ -26,6 +26,10 @@ class NotificationConfigUpdate(BaseModel):
     poll_interval: Optional[int] = None
 
 
+class TestEmailRequest(BaseModel):
+    recipient: Optional[str] = None
+
+
 def _get_conn():
     conn = sqlite3.connect(str(settings.DATA_DIR / "conversations.db"))
     conn.row_factory = sqlite3.Row
@@ -125,3 +129,14 @@ async def update_notification_config(request: NotificationConfigUpdate):
         return {"success": True, "message": "配置已更新"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/test-email")
+async def test_email_config(request: TestEmailRequest):
+    if not notification_service:
+        raise HTTPException(status_code=503, detail="通知服务未初始化")
+    try:
+        await notification_service.send_test_email(recipient=request.recipient)
+        return {"success": True, "message": "测试邮件发送成功，请检查收件箱"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"测试邮件发送失败：{e}")

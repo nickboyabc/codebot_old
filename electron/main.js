@@ -118,6 +118,15 @@ async function startBackend() {
   const logStream = fs.createWriteStream(logFile, { flags: 'a', encoding: 'utf8' });
 
   const resourcesDir = process.resourcesPath || path.join(repoRoot, 'electron', 'resources');
+  const opencodeCandidates = [
+    path.join(process.resourcesPath || '', 'opencode', 'opencode.exe'),
+    path.join(process.resourcesPath || '', 'opencode', 'opencode'),
+    path.join(repoRoot, 'electron', 'vendor', 'opencode', 'opencode.exe'),
+    path.join(repoRoot, 'electron', 'vendor', 'opencode', 'opencode'),
+    path.join(repoRoot, 'vendor', 'opencode', 'opencode.exe'),
+    path.join(repoRoot, 'vendor', 'opencode', 'opencode'),
+  ];
+  const opencodePath = opencodeCandidates.find((p) => p && fs.existsSync(p)) || '';
 
   const env = {
     ...process.env,
@@ -126,6 +135,7 @@ async function startBackend() {
     CODEBOT_FRONTEND_DIST: frontendDist,
     CODEBOT_DATA_DIR: userDataDir,
     CODEBOT_RESOURCES_DIR: resourcesDir,
+    CODEBOT_OPENCODE_PATH: opencodePath,
   };
   // 清除可能污染 PyInstaller 运行时的 Python 环境变量
   delete env.PYTHONHOME;

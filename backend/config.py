@@ -20,6 +20,7 @@ class MemoryConfig(BaseModel):
     show_archived_in_search: bool = True
     # 自动整理
     organize_enabled: bool = False
+    organize_chat_enabled: bool = True
     organize_time: str = "03:00"          # 每日整理时间，格式 "HH:MM"
     organize_last_run: Optional[str] = None  # ISO datetime，上次整理时间
 
@@ -186,7 +187,7 @@ class Settings(BaseSettings):
     MCP_SERVERS_FILE: Path = DATA_DIR / "mcp_servers.json"
     
     # 配置
-    APP_TOKEN: str = "codebot-secret-token-2024"
+    APP_TOKEN: str = ""
     
     class Config:
         env_file = ".env"

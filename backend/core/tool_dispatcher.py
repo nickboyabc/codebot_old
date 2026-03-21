@@ -198,7 +198,16 @@ def _relevance_score(message: str, name: str, description: str) -> float:
     return min(score, 1.0)
 
 
-_RELEVANCE_THRESHOLD = 0.08   # 低阈值，宁可误触发也不漏触发
+_RELEVANCE_THRESHOLD = 0.20
+
+
+def _skill_relevance_threshold(skill: dict) -> float:
+    source = str(skill.get("source") or "")
+    if source in {"opencode", "custom"}:
+        return 0.36
+    if source == "json":
+        return 0.24
+    return _RELEVANCE_THRESHOLD
 
 
 def _find_relevant_skills(message: str, skills: List[dict]) -> List[dict]:
@@ -206,10 +215,15 @@ def _find_relevant_skills(message: str, skills: List[dict]) -> List[dict]:
     scored = []
     for skill in skills:
         score = _relevance_score(message, skill["name"], skill["description"])
-        if score >= _RELEVANCE_THRESHOLD:
+        if score >= _skill_relevance_threshold(skill):
             scored.append((score, skill))
     scored.sort(key=lambda x: -x[0])
-    return [s for _, s in scored[:3]]   # 最多取前 3 个
+    selected: List[dict] = []
+    for score, skill in scored[:2]:
+        item = dict(skill)
+        item["_score"] = score
+        selected.append(item)
+    return selected
 
 
 def _find_relevant_mcp_servers(message: str, servers: List[dict]) -> List[dict]:
@@ -364,19 +378,26 @@ async def build_augmented_prompt(message: str) -> str:
 
     # ── 注入 Skills 上下文 ──────────────────────────────────────────────────
     for skill in relevant_skills:
+        score = float(skill.get("_score", 0.0))
+        source = str(skill.get("source") or "builtin")
+        name = str(skill.get("name") or "").strip() or "unknown"
         content = skill.get("skill_md_content", "").strip()
-        if content:
-            augment_lines.append(f"【技能参考：{skill['name']}】\n{content}")
-        elif skill.get("description"):
-            augment_lines.append(f"【技能参考：{skill['name']}】\n{skill['description']}")
+        description = str(skill.get("description") or "").strip()
+        include_full_content = bool(content and source == "builtin" and score >= 0.55)
+        skill_text = content if include_full_content else description
+        if skill_text:
+            augment_lines.append(
+                f"<skill_context name=\"{name}\" source=\"{source}\" score=\"{score:.3f}\">\n{skill_text}\n</skill_context>"
+            )
 
     # ── 调用 MCP 工具并注入结果 ─────────────────────────────────────────────
     for server in relevant_mcps:
         if server.get("transport") != "sse":
             # stdio 工具需要本地进程，不在此处直接调用
             augment_lines.append(
-                f"【MCP 工具可用：{server['name']}（本地 stdio）】\n"
-                f"{server.get('description', '')}"
+                f"<mcp_context server=\"{server['name']}\" transport=\"stdio\">\n"
+                f"{server.get('description', '')}\n"
+                f"</mcp_context>"
             )
             continue
 
@@ -403,17 +424,26 @@ async def build_augmented_prompt(message: str) -> str:
             result_text = await _call_mcp_sse_tool(server, best_tool["name"], tool_args)
             if result_text:
                 augment_lines.append(
-                    f"【MCP 工具结果：{server['name']}/{best_tool['name']}】\n{result_text}"
+                    f"<mcp_tool_result server=\"{server['name']}\" tool=\"{best_tool['name']}\">\n{result_text}\n</mcp_tool_result>"
                 )
             else:
                 # 工具调用失败，至少注入工具描述作为上下文
                 augment_lines.append(
-                    f"【MCP 工具可用：{server['name']}/{best_tool['name']}】\n"
-                    f"{best_tool.get('description', '')}"
+                    f"<mcp_context server=\"{server['name']}\" tool=\"{best_tool['name']}\">\n"
+                    f"{best_tool.get('description', '')}\n"
+                    f"</mcp_context>"
                 )
 
     if not augment_lines:
         return message
 
-    parts = augment_lines + [f"【用户消息】{message}"]
-    return "\n\n".join(parts)
+    parts = [
+        "你将收到 internal_context 作为内部参考，只能用于推理。",
+        "禁止在最终回复中输出 internal_context 的标签、原文片段，或“技能参考/MCP 工具”这类字样。",
+        "<internal_context>",
+        "\n\n".join(augment_lines),
+        "</internal_context>",
+        f"<user_message>{message}</user_message>",
+        "请直接输出给用户的最终答案。"
+    ]
+    return "\n".join(parts)

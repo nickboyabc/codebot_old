@@ -30,6 +30,7 @@ class MemoryConfigRequest(BaseModel):
     similarity_threshold: float
     show_archived_in_search: bool = True
     organize_enabled: bool = False
+    organize_chat_enabled: bool = True
     organize_time: str = "03:00"
 
 
@@ -38,25 +39,50 @@ async def list_memories(
     category: Optional[str] = None,
     archived: bool = False,
     limit: int = 100,
-    offset: int = 0
+    offset: int = 0,
+    with_stats: bool = False
 ):
     """获取记忆列表"""
     try:
         manager = _get_memory_manager()
-        
+        synced_from_facts = 0
+        if not archived and offset == 0:
+            synced_from_facts = await manager.sync_facts_to_long_term()
+
         memories = await manager.get_memories(
             category=category,
             archived=archived,
             limit=limit,
             offset=offset
         )
-        
-        return {
+        result = {
             "success": True,
             "data": {
                 "items": memories,
                 "total": len(memories)
-            }
+            },
+            "meta": {
+                "synced_from_facts": synced_from_facts
+            },
+        }
+        if with_stats:
+            result["meta"]["storage_counts"] = await manager.get_storage_counts()
+            result["meta"]["storage_db_path"] = str(settings.CONVERSATIONS_DB)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/storage-status")
+async def memory_storage_status():
+    try:
+        manager = _get_memory_manager()
+        return {
+            "success": True,
+            "data": {
+                "db_path": str(settings.CONVERSATIONS_DB),
+                "counts": await manager.get_storage_counts(),
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -169,7 +195,15 @@ async def delete_memory(memory_id: int):
     """删除记忆"""
     try:
         manager = _get_memory_manager()
+        memory = await manager.get_memory(memory_id)
+        metadata = memory.get("metadata") if isinstance(memory, dict) else {}
+        fact_key = str((metadata or {}).get("fact_key") or "").strip()
+        memory_key = str((metadata or {}).get("memory_key") or "").strip()
         await manager.delete_memory(memory_id)
+        if fact_key:
+            await manager.archive_fact_by_key(fact_key)
+        elif memory_key:
+            await manager.archive_fact_by_key(memory_key)
         
         return {
             "success": True,
@@ -273,6 +307,7 @@ async def update_memory_config(request: MemoryConfigRequest):
             similarity_threshold=request.similarity_threshold,
             show_archived_in_search=request.show_archived_in_search,
             organize_enabled=request.organize_enabled,
+            organize_chat_enabled=request.organize_chat_enabled,
             organize_time=request.organize_time,
             organize_last_run=app_config.memory.organize_last_run,  # 保持不变
         )

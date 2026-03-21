@@ -24,6 +24,7 @@
       </el-form-item>
       <el-form-item>
         <el-button type="primary" @click="save">保存配置</el-button>
+        <el-button style="margin-left: 8px" :loading="testing" @click="testEmail">发送测试邮件</el-button>
       </el-form-item>
     </el-form>
   </div>
@@ -43,6 +44,7 @@ const form = ref({
   email_from: '',
   email_to: ''
 })
+const testing = ref(false)
 
 const loadConfig = async () => {
   try {
@@ -80,6 +82,23 @@ const save = async () => {
     ElMessage.success('配置已保存')
   } catch (error) {
     ElMessage.error('保存失败')
+  }
+}
+
+const testEmail = async () => {
+  testing.value = true
+  try {
+    const emailList = form.value.email_to
+      .split(',')
+      .map(item => item.trim())
+      .filter(item => item.length > 0)
+    const recipient = emailList[0] || form.value.email_from || form.value.username
+    await axios.post('/api/notifications/test-email', { recipient })
+    ElMessage.success('测试邮件发送成功，请检查收件箱')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '测试邮件发送失败')
+  } finally {
+    testing.value = false
   }
 }
 

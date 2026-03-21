@@ -466,6 +466,87 @@ class MemoryManager:
             data["metadata"] = {}
         return data
 
+    async def get_storage_counts(self) -> Dict[str, int]:
+        cursor = self.sqlite_db.cursor()
+        counts: Dict[str, int] = {}
+        for table in ("long_term_memories", "facts", "conversations", "messages"):
+            try:
+                counts[table] = int(cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            except Exception:
+                counts[table] = 0
+        counts["active_long_term_memories"] = int(
+            cursor.execute("SELECT COUNT(*) FROM long_term_memories WHERE is_archived = 0").fetchone()[0]
+        )
+        counts["archived_long_term_memories"] = int(
+            cursor.execute("SELECT COUNT(*) FROM long_term_memories WHERE is_archived = 1").fetchone()[0]
+        )
+        counts["active_facts"] = int(
+            cursor.execute("SELECT COUNT(*) FROM facts WHERE is_archived = 0").fetchone()[0]
+        )
+        return counts
+
+    async def sync_facts_to_long_term(self) -> int:
+        cursor = self.sqlite_db.cursor()
+        rows = cursor.execute(
+            "SELECT key, value, metadata, is_archived FROM facts WHERE is_archived = 0 ORDER BY updated_at DESC, id DESC"
+        ).fetchall()
+        if not rows:
+            return 0
+
+        inserted = 0
+        for row in rows:
+            key = str(row["key"] or "").strip()
+            value = str(row["value"] or "").strip()
+            if not key or not value:
+                continue
+            metadata_raw = row["metadata"]
+            metadata: Dict = {}
+            if metadata_raw:
+                try:
+                    metadata = json.loads(metadata_raw)
+                except Exception:
+                    metadata = {}
+            memory_key = str(metadata.get("memory_key") or key).strip()
+            category = str(metadata.get("category") or "profile").strip() or "profile"
+            existing = await self.get_keyed_long_term_memory(
+                memory_key=memory_key,
+                category=category,
+                include_archived=False,
+            )
+            if existing:
+                continue
+
+            birthday_key = ""
+            if memory_key == "birthday" or key == "birthday":
+                birthday_key = "birthday"
+            elif memory_key.endswith("_birthday"):
+                birthday_key = memory_key
+            elif key.endswith("_birthday"):
+                birthday_key = key
+
+            if birthday_key:
+                if birthday_key == "birthday":
+                    content = f"生日：{value}"
+                else:
+                    subject = birthday_key[:-9].strip().strip("_")
+                    content = f"{subject}的生日：{value}" if subject else f"生日：{value}"
+                category = "profile"
+            else:
+                continue
+
+            await self.save_long_term_memory(
+                content=content,
+                category=category,
+                metadata={
+                    **metadata,
+                    "memory_key": memory_key,
+                    "fact_key": key,
+                    "source": metadata.get("source") or "facts_sync",
+                },
+            )
+            inserted += 1
+        return inserted
+
     async def search_facts(
         self,
         query: str,
@@ -553,7 +634,10 @@ class MemoryManager:
         if include_archived or not memory_ids:
             return memories
         archived_map = self._fetch_archived_map(memory_ids)
-        return [item for item in memories if not archived_map.get(item["memory_id"], False)]
+        return [
+            item for item in memories
+            if item["memory_id"] in archived_map and not archived_map.get(item["memory_id"], False)
+        ]
     
     async def get_memories(
         self,
@@ -606,6 +690,11 @@ class MemoryManager:
     
     async def delete_memory(self, memory_id: int):
         """删除记忆"""
+        chroma_id = f"memory_{memory_id}"
+        try:
+            self.memory_collection.delete(ids=[chroma_id])
+        except Exception:
+            pass
         cursor = self.sqlite_db.cursor()
         cursor.execute(
             "DELETE FROM long_term_memories WHERE id = ?",
@@ -613,6 +702,26 @@ class MemoryManager:
         )
         self.sqlite_db.commit()
         logger.info(f"删除记忆：{memory_id}")
+
+    async def get_memory(self, memory_id: int) -> Optional[Dict]:
+        cursor = self.sqlite_db.cursor()
+        row = cursor.execute(
+            "SELECT * FROM long_term_memories WHERE id = ?",
+            (memory_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return self._normalize_memory_row(row)
+
+    async def archive_fact_by_key(self, key: str) -> bool:
+        cursor = self.sqlite_db.cursor()
+        cursor.execute(
+            "UPDATE facts SET is_archived = 1, updated_at = CURRENT_TIMESTAMP WHERE key = ?",
+            (key,)
+        )
+        changed = cursor.rowcount > 0
+        self.sqlite_db.commit()
+        return changed
 
     def _repair_chroma_db(self, chroma_dir: Path) -> bool:
         """尝试修复因版本迁移导致的 ChromaDB schema 不兼容问题（补充被高版本删除的列）"""

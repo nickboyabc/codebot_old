@@ -28,8 +28,25 @@
       >
         整理记忆
       </el-button>
+      <el-button
+        type="info"
+        plain
+        :loading="selfChecking"
+        style="margin-left: 8px"
+        @click="runMemorySelfCheck"
+      >
+        一键自检
+      </el-button>
       <span v-if="organizeStatus" class="organize-status-text">{{ organizeStatus }}</span>
     </div>
+    <el-alert
+      v-if="storageStatus"
+      class="storage-alert"
+      type="info"
+      :closable="false"
+      show-icon
+      :title="storageStatus"
+    />
     <el-table v-if="memories.length > 0" :data="memories" style="width: 100%">
       <el-table-column prop="category" label="类别" width="120">
         <template #default="{ row }">
@@ -69,6 +86,35 @@
         <el-button type="primary" @click="createMemory" :loading="creating">保存</el-button>
       </template>
     </el-dialog>
+    <el-dialog v-model="showSelfCheckDialog" title="记忆自检结果" width="560px">
+      <el-descriptions :column="1" border>
+        <el-descriptions-item label="检查结论">
+          <el-tag :type="selfCheckResult.statusType">{{ selfCheckResult.statusText }}</el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="数据库路径">
+          <span class="selfcheck-value">{{ selfCheckResult.dbPath || '-' }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="长期记忆(活跃/总数)">
+          <span class="selfcheck-value">
+            {{ selfCheckResult.activeLongTermCount }} / {{ selfCheckResult.longTermCount }}
+          </span>
+        </el-descriptions-item>
+        <el-descriptions-item label="事实记忆(活跃/总数)">
+          <span class="selfcheck-value">
+            {{ selfCheckResult.activeFactsCount }} / {{ selfCheckResult.factsCount }}
+          </span>
+        </el-descriptions-item>
+        <el-descriptions-item label="接口读链路">
+          <span class="selfcheck-value">{{ selfCheckResult.listApiReadable ? '正常' : '异常' }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="建议">
+          <span class="selfcheck-value">{{ selfCheckResult.advice }}</span>
+        </el-descriptions-item>
+      </el-descriptions>
+      <template #footer>
+        <el-button type="primary" @click="showSelfCheckDialog = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -104,6 +150,20 @@ const showCreateDialog = ref(false)
 const creating = ref(false)
 const organizing = ref(false)
 const organizeStatus = ref('')
+const storageStatus = ref('')
+const selfChecking = ref(false)
+const showSelfCheckDialog = ref(false)
+const selfCheckResult = ref({
+  statusText: '未检查',
+  statusType: 'info',
+  dbPath: '',
+  longTermCount: 0,
+  activeLongTermCount: 0,
+  factsCount: 0,
+  activeFactsCount: 0,
+  listApiReadable: false,
+  advice: '',
+})
 const newMemory = ref({
   category: 'habit',
   content: ''
@@ -113,10 +173,23 @@ const loadMemories = async () => {
   try {
     const params = {}
     if (filterCategory.value) params.category = filterCategory.value
+    params.with_stats = true
     const response = await axios.get('/api/memory/memories', { params })
     memories.value = response.data.data.items || []
+    const meta = response.data.meta || {}
+    const counts = meta.storage_counts || {}
+    const activeCount = Number(counts.active_long_term_memories || 0)
+    const factCount = Number(counts.active_facts || 0)
+    const syncedCount = Number(meta.synced_from_facts || 0)
+    if (memories.value.length === 0) {
+      const base = `当前数据库活跃长期记忆 ${activeCount} 条，活跃事实记忆 ${factCount} 条`
+      storageStatus.value = syncedCount > 0 ? `${base}，已自动同步 ${syncedCount} 条到长期记忆。` : `${base}。`
+    } else {
+      storageStatus.value = ''
+    }
   } catch (error) {
     ElMessage.error('加载记忆失败')
+    storageStatus.value = ''
   }
 }
 
@@ -194,6 +267,70 @@ const triggerOrganize = async () => {
   }
 }
 
+const runMemorySelfCheck = async () => {
+  selfChecking.value = true
+  try {
+    const [statusResp, listResp] = await Promise.all([
+      axios.get('/api/memory/storage-status'),
+      axios.get('/api/memory/memories', {
+        params: { with_stats: true, limit: 1, offset: 0 }
+      })
+    ])
+    const counts = statusResp.data?.data?.counts || {}
+    const dbPath = String(statusResp.data?.data?.db_path || '')
+    const listApiReadable = Boolean(listResp.data?.success)
+    const activeLongTermCount = Number(counts.active_long_term_memories || 0)
+    const activeFactsCount = Number(counts.active_facts || 0)
+    const longTermCount = Number(counts.long_term_memories || 0)
+    const factsCount = Number(counts.facts || 0)
+    let statusText = '通过'
+    let statusType = 'success'
+    let advice = '记忆存储与读取链路正常。'
+
+    if (!dbPath || !listApiReadable) {
+      statusText = '失败'
+      statusType = 'danger'
+      advice = '接口读链路异常，请检查后端日志与数据库文件权限。'
+    } else if (activeLongTermCount === 0 && activeFactsCount > 0) {
+      statusText = '警告'
+      statusType = 'warning'
+      advice = '仅存在事实记忆，建议先打开活跃记忆页触发自动同步。'
+    } else if (activeLongTermCount === 0 && activeFactsCount === 0) {
+      statusText = '提示'
+      statusType = 'info'
+      advice = '当前暂无记忆数据，请先在聊天中触发记忆保存。'
+    }
+
+    selfCheckResult.value = {
+      statusText,
+      statusType,
+      dbPath,
+      longTermCount,
+      activeLongTermCount,
+      factsCount,
+      activeFactsCount,
+      listApiReadable,
+      advice,
+    }
+    showSelfCheckDialog.value = true
+  } catch (error) {
+    selfCheckResult.value = {
+      statusText: '失败',
+      statusType: 'danger',
+      dbPath: '',
+      longTermCount: 0,
+      activeLongTermCount: 0,
+      factsCount: 0,
+      activeFactsCount: 0,
+      listApiReadable: false,
+      advice: error.response?.data?.detail || '自检失败，请检查后端服务状态。',
+    }
+    showSelfCheckDialog.value = true
+  } finally {
+    selfChecking.value = false
+  }
+}
+
 const pollOrganizeStatus = async () => {
   const maxAttempts = 60  // 最多轮询 5 分钟（每 5 秒一次）
   let attempts = 0
@@ -235,5 +372,10 @@ onMounted(loadMemories)
   color: #909399;
   margin-left: 8px;
 }
+.storage-alert {
+  margin-bottom: 12px;
+}
+.selfcheck-value {
+  word-break: break-all;
+}
 </style>
-

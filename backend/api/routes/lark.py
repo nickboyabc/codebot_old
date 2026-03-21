@@ -96,10 +96,10 @@ async def _process_webhook_message(chat_id: str, content: str):
     try:
         text = service.normalize_text(service.extract_text(content))
         if not text:
-            logger.warning(f"[飞书Webhook] 消息内容为空，content={content!r}")
+            logger.warning(f"[飞书Webhook] 消息内容为空: chat_id={chat_id}")
             return
 
-        logger.info(f"[飞书Webhook] 处理消息: chat_id={chat_id}, text={text[:50]!r}")
+        logger.info(f"[飞书Webhook] 处理消息: chat_id={chat_id}, text_length={len(text)}")
         mm = memory_manager or MemoryManager()
         conversation_title = f"飞书对话-{chat_id[:6]}"
         conversation_id = await service.get_or_create_conversation_id(mm, chat_id, conversation_title)

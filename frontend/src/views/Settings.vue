@@ -4,9 +4,6 @@
       <el-tab-pane label="通用设置" name="general">
         <GeneralSettings />
       </el-tab-pane>
-      <el-tab-pane label="记忆配置" name="memory">
-        <MemorySettings />
-      </el-tab-pane>
       <el-tab-pane label="通知配置" name="notification">
         <NotificationSettings />
       </el-tab-pane>
@@ -35,7 +32,6 @@
 <script setup>
 import { ref } from 'vue'
 import GeneralSettings from '@/components/GeneralSettings.vue'
-import MemorySettings from '@/components/MemorySettings.vue'
 import NotificationSettings from '@/components/NotificationSettings.vue'
 import LarkSettings from '@/components/LarkSettings.vue'
 import EmailSettings from '@/components/EmailSettings.vue'
