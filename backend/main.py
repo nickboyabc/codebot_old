@@ -175,12 +175,25 @@ async def lifespan(app: FastAPI):
     )
     await scheduler_router.scheduler.start()
     
-    should_auto_start = bool(app_config.opencode.auto_start or os.environ.get("CODEBOT_DATA_DIR"))
+    force_auto_start = os.environ.get("CODEBOT_FORCE_OPENCODE_AUTOSTART", "").strip().lower() in {"1", "true", "yes", "on"}
+    should_auto_start = bool(force_auto_start or app_config.opencode.auto_start or os.environ.get("CODEBOT_DATA_DIR"))
     if should_auto_start:
         parsed = urlparse(app_config.opencode.server_url)
         configured_port = parsed.port or 1120
+        preferred_port_raw = os.environ.get("CODEBOT_OPENCODE_PREFERRED_PORT", "").strip()
+        fallback_port_raw = os.environ.get("CODEBOT_OPENCODE_FALLBACK_PORT", "").strip()
+        try:
+            preferred_port = int(preferred_port_raw) if preferred_port_raw else 1120
+        except Exception:
+            preferred_port = 1120
+        try:
+            fallback_port = int(fallback_port_raw) if fallback_port_raw else 4096
+        except Exception:
+            fallback_port = 4096
         candidate_ports = []
-        for p in [1120, configured_port, 4096]:
+        for p in [preferred_port, configured_port, fallback_port]:
+            if not isinstance(p, int) or p < 1 or p > 65535:
+                continue
             if p not in candidate_ports:
                 candidate_ports.append(p)
         actual_port = 0

@@ -19,7 +19,18 @@ import httpx
 _opencode_server_process: Optional[subprocess.Popen] = None
 
 
-def _find_opencode_command() -> Optional[List[str]]:
+def _collect_opencode_commands() -> List[List[str]]:
+    commands: List[List[str]] = []
+    seen = set()
+
+    def _append_path(p: Path):
+        key = str(p).strip().lower()
+        if not key or key in seen:
+            return
+        if p.exists():
+            seen.add(key)
+            commands.append([str(p)])
+
     configured_path = os.environ.get("CODEBOT_OPENCODE_PATH", "").strip()
     if configured_path:
         configured = Path(configured_path)
@@ -30,9 +41,7 @@ def _find_opencode_command() -> Optional[List[str]]:
                 configured / "opencode",
             ])
         for p in candidates:
-            if p.exists():
-                logger.info(f"使用配置的 OpenCode 路径: {p}")
-                return [str(p)]
+            _append_path(p)
 
     # 1. Check for a bundled binary shipped alongside the packaged app.
     #    Electron sets CODEBOT_RESOURCES_DIR to process.resourcesPath.
@@ -43,9 +52,7 @@ def _find_opencode_command() -> Optional[List[str]]:
             Path(resources_dir) / "opencode" / "opencode",
         ]
         for p in candidates:
-            if p.exists():
-                logger.info(f"使用打包内置 OpenCode: {p}")
-                return [str(p)]
+            _append_path(p)
 
     repo_root = Path(__file__).resolve().parents[2]
     dev_candidates = [
@@ -55,16 +62,20 @@ def _find_opencode_command() -> Optional[List[str]]:
         repo_root / "vendor" / "opencode" / "opencode",
     ]
     for p in dev_candidates:
-        if p.exists():
-            logger.info(f"使用项目内置 OpenCode: {p}")
-            return [str(p)]
+        _append_path(p)
 
     # 2. Fall back to system PATH
     for name in ["opencode", "opencode-ai"]:
         path_found = shutil.which(name)
         if path_found:
-            return [path_found]
-    return None
+            _append_path(Path(path_found))
+
+    return commands
+
+
+def _find_opencode_command() -> Optional[List[str]]:
+    commands = _collect_opencode_commands()
+    return commands[0] if commands else None
 
 
 def _is_port_open(host: str, port: int) -> bool:
@@ -91,23 +102,24 @@ async def _is_opencode_http_ready(base_url: str) -> bool:
 
 async def check_opencode_installed() -> bool:
     """检查 OpenCode 是否已安装"""
-    try:
-        command = _find_opencode_command()
-        if not command:
-            return False
-        result = subprocess.run(
-            [*command, "--version"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        if result.returncode == 0:
-            logger.info(f"OpenCode 已安装：{result.stdout.strip()}")
-            return True
+    commands = _collect_opencode_commands()
+    if not commands:
         return False
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return False
+    for command in commands:
+        try:
+            result = subprocess.run(
+                [*command, "--version"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                logger.info(f"OpenCode 已安装：{result.stdout.strip()} ({command[0]})")
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+    return False
 
 
 async def install_opencode() -> bool:
@@ -205,8 +217,8 @@ async def start_opencode_server(port: int = 1120) -> int:
             logger.warning(f"端口 {port} 已被非 OpenCode 进程占用，跳过该端口")
             return 0
 
-        command = _find_opencode_command()
-        if not command:
+        commands = _collect_opencode_commands()
+        if not commands:
             logger.error("未找到 OpenCode 可执行文件（已检查打包目录和系统 PATH）")
             return 0
 
@@ -222,23 +234,34 @@ async def start_opencode_server(port: int = 1120) -> int:
 
         stdout_file = open(stdout_path, "a", encoding="utf-8")
         stderr_file = open(stderr_path, "a", encoding="utf-8")
+        for command in commands:
+            try:
+                base_url = f"http://127.0.0.1:{port}"
+                proc = subprocess.Popen(
+                    [*command, "serve", "--port", str(port), "--hostname", "127.0.0.1"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    cwd=str(Path.home())
+                )
+                for _ in range(30):
+                    if await _is_opencode_http_ready(base_url):
+                        _opencode_server_process = proc
+                        logger.info(f"OpenCode Server 已启动 ({base_url})，命令：{command[0]}")
+                        return port
+                    if proc.poll() is not None:
+                        break
+                    await asyncio.sleep(0.5)
+                if proc.poll() is None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                logger.warning(f"OpenCode 命令未就绪，尝试下一个候选：{command[0]}")
+            except Exception as cmd_err:
+                logger.warning(f"OpenCode 命令启动失败，尝试下一个候选：{command[0]} ({cmd_err})")
 
-        base_url = f"http://127.0.0.1:{port}"
-        _opencode_server_process = subprocess.Popen(
-            [*command, "serve", "--port", str(port), "--hostname", "127.0.0.1"],
-            stdin=subprocess.DEVNULL,
-            stdout=stdout_file,
-            stderr=stderr_file,
-            cwd=str(Path.home())
-        )
-
-        for _ in range(30):
-            if await _is_opencode_http_ready(base_url):
-                logger.info(f"OpenCode Server 已启动 ({base_url})")
-                return port
-            await asyncio.sleep(0.5)
-
-        logger.error(f"OpenCode Server 启动超时，未就绪 ({base_url})")
+        logger.error(f"OpenCode Server 启动失败，所有候选命令均未就绪 ({base_url})")
         return 0
     except Exception as e:
         logger.error(f"启动 OpenCode Server 失败：{e}")

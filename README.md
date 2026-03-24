@@ -60,7 +60,7 @@ opencode serve
 opencode serve --port 4096 --hostname 127.0.0.1
 ```
 
-应用程序配置文件（设置 → 通用设置 → 配置文件 → `config.json`）里的 `server_url` 需要与 `opencode serve` 保持一致（端口/地址一致）。如果连不上，请优先检查该配置项。桌面端启动后端时会自动尝试拉起 OpenCode 服务，端口优先级为 `127.0.0.1:1120` → 配置端口 → `127.0.0.1:4096`。若 `1120` 被其他进程占用，会直接回退到后续候选端口，不会改用 `1121/1122` 这类随机端口。
+应用程序配置文件（设置 → 通用设置 → 配置文件 → `config.json`）里的 `server_url` 需要与 `opencode serve` 保持一致（端口/地址一致）。如果连不上，请优先检查该配置项。桌面端启动后端时会自动尝试拉起 OpenCode 服务，端口优先级为 `127.0.0.1:1120` → 配置端口 → `127.0.0.1:4096`。若 `1120` 被其他进程占用，会直接回退到后续候选端口，不会改用 `1121/1122` 这类随机端口。这样可优先为 Codebot 单独使用 1120，不干扰已有的 `4096` 服务。
 
 ##### 后台自动启动（Windows 任务计划程序）
 
@@ -118,7 +118,7 @@ npm start
 ```
 
 开发模式下（从源码运行），Electron 默认使用 `venv\\Scripts\\python.exe`（若存在）启动 `backend\\main.py`，以确保后端代码变更立即生效；如需强制使用 `backend\\dist\\codebot-backend.exe`，可设置环境变量 `CODEBOT_BACKEND_MODE=exe`。
-Electron 会优先使用应用内置的 `opencode` 可执行文件（`electron/vendor/opencode` 或打包后的 `resources/opencode`）自动拉起 `opencode serve`；若内置文件不可用，再回退到系统 PATH 中的 `opencode`。
+Electron 会优先使用应用内置的 `opencode` 可执行文件（`electron/vendor/opencode` 或打包后的 `resources/opencode`）自动拉起 `opencode serve`；若内置文件不可用或不可执行，会自动回退到系统 PATH 中的 `opencode`。桌面端会强制开启 OpenCode 自动拉起，并优先尝试 1120（回退配置端口与 4096）。
 
 ### 访问
 
@@ -311,6 +311,13 @@ codebot/
 如果你在自行测试 WebSocket 时看到 `server rejected WebSocket connection: HTTP 200`，说明 OpenCode Server 在该端口提供的是 HTTP 服务而非 WebSocket。
 当前版本 Codebot 使用 OpenCode 的 HTTP API（如 `/global/health`、`/session`）进行交互，即使你把 `server_url` 写成 WebSocket 形式，后端也会自动转换为对应的 HTTP 基础地址。
 
+### 启动时报 WinError 216（OpenCode 可执行文件不兼容）
+
+这通常表示内置的 `opencode.exe` 与当前系统架构不兼容。当前版本会自动尝试下一个候选命令（系统 PATH 中的 `opencode/opencode-ai`），无需手动修改代码。
+
+- 建议先确认系统中可直接执行：`opencode --version`
+- 若命令不存在，可重新安装 OpenCode CLI（例如 `npm i -g opencode-ai`）
+
 ### 刷新页面后白屏或 404
 
 如果直接访问或刷新 `/memory/active`、`/skills` 等前端路由地址，请确保通过后端服务地址访问（如 `http://127.0.0.1:8080`）。
@@ -420,6 +427,8 @@ codebot/
 - `APP_TOKEN` 不再内置默认值，需在 `.env` 中显式配置随机高强度令牌
 - `.env.example` 仅保留占位符，避免误用示例值作为生产密钥
 - `backend/dist_build/` 与 `security-scan-*.json` 已加入 `.gitignore`，避免将打包产物和扫描报告误提交
+- 本地开源清理建议先删除 `backend/dist_build/`、`security-scan-*.json`、`security-report*.json` 再提交
+- 推荐执行：`python C:\Users\yuhan\.agents\skills\security\scripts\scan_secrets.py . --severity medium --extensions .py,.js,.vue,.json,.env,.toml,.yaml,.yml,.md`
 - 飞书 Webhook 日志默认不再记录消息正文，仅记录 `chat_id` 和文本长度
 
 ## 🔧 开发指南
@@ -464,16 +473,19 @@ npm run build
 补充说明：
 
 - Electron 启动时会先检查 `http://127.0.0.1:8080/api/health`，若后端已在运行则复用现有实例，不会重复拉起后端进程。
+- 若检测到已有后端运行但 `opencode_connected=false`，Electron 会自动重启后端以重新拉起 `opencode serve`。
 - 开发模式下 `npm start` 始终使用 `venv\Scripts\python.exe backend\main.py` 启动后端，确保运行的是当前源码。
 - 开发模式若检测到 8080 端口为非源码后端（`runtime_source != source`），会先终止该进程再拉起源码后端，避免看不到最新流式改动。
 - 桌面端打包默认读取 `backend/dist_build/codebot-backend` 作为后端资源目录。
 - Windows 下建议使用根目录 `build.bat` 执行完整打包流程（后端 PyInstaller + 前端构建 + Electron 安装包）。
 - Windows 打包产物默认输出到 `electron/dist/electron_new/`。
+- Windows 产物会同时生成安装版（`Codebot Setup 1.0.0.exe`）和免安装版（`Codebot 1.0.0.exe`，portable）。
 - `build.bat` 会自动清理 `electron/dist/electron_new/win-unpacked`，避免旧桌面资源残留导致打包混淆。
 - `build.bat` 使用 `python -m pip` 安装依赖并关闭 pip 版本检查，兼容 Conda/venv 场景。
 - `build.bat` 使用 `python -m PyInstaller` 执行后端封装，避免 `pyinstaller.exe` 路径缺失导致构建失败。
 - `build.bat` 在前端/桌面依赖安装失败时会直接给出错误并退出，便于快速定位打包问题。
 - 若 `electron-builder` 提示 `win-unpacked\\resources\\app.asar` 被占用，请先关闭已运行的 `Codebot.exe` 后再打包。
+- 免安装分发请复制整个 `electron/dist/electron_new/win-unpacked/` 目录，不要只拷贝 `Codebot.exe`，否则会缺少 `resources` 下的后端与 `opencode` 运行文件导致无法启动。
 
 ## 📝 API 文档
 

@@ -65,6 +65,7 @@ backend/build_tmp2/
 .env
 .env.local
 security-scan-*.json
+security-report*.json
 
 # IDE
 .vscode/

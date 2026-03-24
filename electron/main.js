@@ -49,7 +49,7 @@ function createWindow() {
     .then(() => waitForBackendReady())
     .then(async () => {
       const localIP = getLocalIP();
-      const url = `http://${localIP}:8080`;
+      const url = 'http://127.0.0.1:8080';
       await mainWindow.webContents.session.clearCache();
       await mainWindow.loadURL(url);
       
@@ -82,22 +82,31 @@ async function startBackend() {
   const isDev = !app.isPackaged;
   try {
     const payload = await checkHealth();
-    if (!isDev) {
-      console.log('[backend] 已检测到运行中的服务，跳过启动');
-      return;
-    }
-    if (payload?.runtime_source === 'source') {
-      console.log('[backend] 开发模式检测到源码后端已运行，跳过启动');
-      return;
+    const opencodeConnected = Boolean(payload?.opencode_connected);
+    const runtimeSource = payload?.runtime_source;
+    if (opencodeConnected) {
+      if (!isDev) {
+        console.log('[backend] 已检测到运行中的服务且 OpenCode 已连接，跳过启动');
+        return;
+      }
+      if (runtimeSource === 'source') {
+        console.log('[backend] 开发模式检测到源码后端且 OpenCode 已连接，跳过启动');
+        return;
+      }
     }
     if (payload?.pid) {
       try {
         process.kill(payload.pid);
-        console.log(`[backend] 开发模式已终止非源码后端进程 pid=${payload.pid}`);
+        console.log(`[backend] 已终止已有后端进程（准备重启并拉起 OpenCode） pid=${payload.pid}`);
       } catch (e) {
         console.log(`[backend] 无法终止已有后端 pid=${payload.pid}: ${e.message}`);
+        if (opencodeConnected) {
+          return;
+        }
       }
       await new Promise((resolve) => setTimeout(resolve, 600));
+    } else if (payload?.status === 'healthy' && opencodeConnected) {
+      return;
     }
   } catch (_) {}
 
@@ -136,6 +145,9 @@ async function startBackend() {
     CODEBOT_DATA_DIR: userDataDir,
     CODEBOT_RESOURCES_DIR: resourcesDir,
     CODEBOT_OPENCODE_PATH: opencodePath,
+    CODEBOT_FORCE_OPENCODE_AUTOSTART: '1',
+    CODEBOT_OPENCODE_PREFERRED_PORT: '1120',
+    CODEBOT_OPENCODE_FALLBACK_PORT: '4096',
   };
   // 清除可能污染 PyInstaller 运行时的 Python 环境变量
   delete env.PYTHONHOME;

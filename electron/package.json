@@ -52,7 +52,7 @@
     },
     "win": {
       "icon": "../logo.ico",
-      "target": ["nsis"]
+      "target": ["nsis", "portable"]
     },
     "linux": {
       "target": ["AppImage", "deb"]

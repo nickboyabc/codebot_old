@@ -13,6 +13,7 @@ import base64
 import tempfile
 import os
 import hashlib
+from urllib.parse import urlparse
 
 import asyncio
 
@@ -25,6 +26,7 @@ from core.memory_extractor import extract_and_save_background
 from api.routes import scheduler as scheduler_router
 from api.routes import mcp as mcp_router
 from core.tool_dispatcher import build_augmented_prompt
+from utils.installer import start_opencode_server
 
 router = APIRouter()
 opencode_ws: Optional[OpenCodeClient] = None
@@ -2590,6 +2592,7 @@ async def undo_message(conversation_id: int, request: UndoMessageRequest):
 @router.get("/models")
 async def get_models():
     """获取 OpenCode 可用模型列表"""
+    global opencode_ws
     client = opencode_ws
     created_client = False
     try:
@@ -2598,7 +2601,25 @@ async def get_models():
             created_client = True
         ok = await client.try_connect(attempts=2, delay=0.3, open_timeout=1.0)
         if not ok:
-            return {"success": False, "data": {"models": []}, "message": "OpenCode 未连接"}
+            parsed = urlparse(app_config.opencode.server_url or "")
+            configured_port = parsed.port or 1120
+            candidate_ports = []
+            for p in [1120, configured_port, 4096]:
+                if isinstance(p, int) and 1 <= p <= 65535 and p not in candidate_ports:
+                    candidate_ports.append(p)
+            actual_port = 0
+            for port in candidate_ports:
+                actual_port = await start_opencode_server(port)
+                if actual_port:
+                    break
+            if actual_port:
+                new_url = f"http://127.0.0.1:{actual_port}"
+                client.base_url = new_url
+                if opencode_ws is not None:
+                    opencode_ws.base_url = new_url
+                ok = await client.try_connect(attempts=4, delay=0.4, open_timeout=1.0)
+            if not ok:
+                return {"success": False, "data": {"models": []}, "message": "OpenCode 未连接"}
         models = await client.get_models()
         return {"success": True, "data": {"models": models}, "message": ""}
     except Exception as e:
