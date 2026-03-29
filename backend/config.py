@@ -95,6 +95,16 @@ class NetworkConfig(BaseModel):
     port: int = 8080
 
 
+class CorsConfig(BaseModel):
+    """CORS跨域配置"""
+    enabled: bool = True
+    # 允许的来源域名列表，["*"] 表示允许所有（不推荐生产环境使用）
+    allow_origins: List[str] = ["*"]
+    allow_credentials: bool = True
+    allow_methods: List[str] = ["*"]
+    allow_headers: List[str] = ["*"]
+
+
 class IntegrationConfig(BaseModel):
     """第三方集成配置"""
     modelscope_api_key: str = ""
@@ -146,6 +156,7 @@ class AppConfig(BaseModel):
     opencode: OpenCodeConfig = OpenCodeConfig()
     models: ModelConfig = ModelConfig()
     network: NetworkConfig = NetworkConfig()
+    cors: CorsConfig = CorsConfig()
     integration: IntegrationConfig = IntegrationConfig()
     skills: SkillsConfig = SkillsConfig()
     sandbox: SandboxConfig = SandboxConfig()

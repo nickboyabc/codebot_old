@@ -1,4 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { useUserStore } from '../stores/user'
 
 import MemoryView from '@/views/Memory.vue'
 import ActiveMemoriesView from '@/components/ActiveMemories.vue'
@@ -13,9 +15,22 @@ const routes = [
     redirect: '/chat'
   },
   {
+    path: '/login',
+    name: 'Login',
+    component: () => import('@/views/Login.vue'),
+    meta: { requiresAuth: false }
+  },
+  {
+    path: '/register',
+    name: 'Register',
+    component: () => import('@/views/Register.vue'),
+    meta: { requiresAuth: false }
+  },
+  {
     path: '/chat',
     name: 'Chat',
-    component: () => import('@/views/Chat.vue')
+    component: () => import('@/views/Chat.vue'),
+    meta: { requiresAuth: true }
   },
   {
     path: '/memory',
@@ -54,35 +69,66 @@ const routes = [
     ]
   },
   {
+    path: '/users',
+    name: 'UserManage',
+    component: () => import('@/views/UserManage.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
     path: '/scheduler',
     name: 'Scheduler',
-    component: () => import('@/views/Scheduler.vue')
+    component: () => import('@/views/Scheduler.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true }
   },
   {
     path: '/skills',
     name: 'Skills',
-    component: () => import('@/views/Skills.vue')
+    component: () => import('@/views/Skills.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true }
   },
   {
     path: '/mcp',
     name: 'MCP',
-    component: () => import('@/views/MCP.vue')
+    component: () => import('@/views/MCP.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true }
   },
   {
     path: '/logs',
     name: 'Logs',
-    component: () => import('@/views/Logs.vue')
+    component: () => import('@/views/Logs.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true }
   },
   {
     path: '/settings',
     name: 'Settings',
-    component: () => import('@/views/Settings.vue')
+    component: () => import('@/views/Settings.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true }
   }
 ]
 
 const router = createRouter({
   history: createWebHistory(),
   routes
+})
+
+router.beforeEach((to, from, next) => {
+  const userStore = useUserStore()
+
+  if (to.meta.requiresAuth === false) {
+    if (userStore.isLoggedIn) return next('/chat')
+    return next()
+  }
+
+  if (!userStore.isLoggedIn) {
+    return next({ path: '/login', query: { redirect: to.fullPath } })
+  }
+
+  if (to.meta.requiresAdmin && !userStore.isAdmin) {
+    ElMessage.warning('您没有权限访问该页面')
+    return next('/chat')
+  }
+
+  next()
 })
 
 router.onError((error) => {

@@ -1,7 +1,7 @@
 """
 聊天 API 路由
 """
-from fastapi import APIRouter, HTTPException, Body, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Body, Depends, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Tuple, Dict, Any
@@ -27,6 +27,7 @@ from api.routes import scheduler as scheduler_router
 from api.routes import mcp as mcp_router
 from core.tool_dispatcher import build_augmented_prompt
 from utils.installer import start_opencode_server
+from ..deps import get_current_user, TokenData
 
 router = APIRouter()
 opencode_ws: Optional[OpenCodeClient] = None
@@ -1592,18 +1593,19 @@ def _write_skill(skill_id: str, data: dict):
 
 
 @router.post("/conversations", response_model=MessageResponse)
-async def create_conversation(title: str = Body("新对话", embed=True)):
+async def create_conversation(title: str = Body("新对话", embed=True), user: TokenData = Depends(get_current_user)):
     """创建对话"""
     try:
+        user_id = user.sub
         # 初始化数据库连接
         conversations_db.connect()
-        
+
         memory_manager = MemoryManager()
-        conversation_id = await memory_manager.create_conversation(title)
-        
+        conversation_id = await memory_manager.create_conversation(title, user_id=user_id)
+
         return MessageResponse(
             success=True,
-            data={"id": conversation_id, "title": title},
+            data={"id": conversation_id, "title": title, "user_id": user_id},
             message="对话创建成功"
         )
     except Exception as e:
@@ -1614,19 +1616,22 @@ async def create_conversation(title: str = Body("新对话", embed=True)):
 async def list_conversations(
     limit: int = 50,
     offset: int = 0,
-    archived: bool = False
+    archived: bool = False,
+    user: TokenData = Depends(get_current_user)
 ):
     """获取对话列表"""
     try:
+        user_id = user.sub
         conversations_db.connect()
         memory_manager = MemoryManager()
-        
+
         conversations = await memory_manager.get_conversations(
             limit=limit,
             offset=offset,
-            archived=archived
+            archived=archived,
+            user_id=user_id
         )
-        
+
         return {
             "success": True,
             "data": {
@@ -1639,17 +1644,18 @@ async def list_conversations(
 
 
 @router.get("/conversations/{conversation_id}")
-async def get_conversation(conversation_id: int):
+async def get_conversation(conversation_id: int, user: TokenData = Depends(get_current_user)):
     """获取对话详情"""
     try:
+        user_id = user.sub
         conversations_db.connect()
         memory_manager = MemoryManager()
-        
-        conversation = await memory_manager.get_conversation(conversation_id)
-        
+
+        conversation = await memory_manager.get_conversation(conversation_id, user_id=user_id)
+
         if not conversation:
             raise HTTPException(status_code=404, detail="对话不存在")
-        
+
         return {
             "success": True,
             "data": conversation
@@ -1661,14 +1667,15 @@ async def get_conversation(conversation_id: int):
 
 
 @router.delete("/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: int):
+async def delete_conversation(conversation_id: int, user: TokenData = Depends(get_current_user)):
     """删除对话"""
     try:
+        user_id = user.sub
         conversations_db.connect()
         memory_manager = MemoryManager()
-        
-        await memory_manager.delete_conversation(conversation_id)
-        
+
+        await memory_manager.delete_conversation(conversation_id, user_id=user_id)
+
         return {
             "success": True,
             "message": "对话已删除"
@@ -1678,69 +1685,95 @@ async def delete_conversation(conversation_id: int):
 
 
 @router.patch("/conversations/{conversation_id}/title")
-async def update_conversation_title(conversation_id: int, request: UpdateTitleRequest):
+async def update_conversation_title(conversation_id: int, request: UpdateTitleRequest, user: TokenData = Depends(get_current_user)):
     try:
+        user_id = user.sub
         conversations_db.connect()
         memory_manager = MemoryManager()
+        # 先验证用户拥有该对话
+        conv = await memory_manager.get_conversation(conversation_id, user_id=user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="对话不存在或无权限")
         await memory_manager.update_conversation_title(conversation_id, request.title)
         return {
             "success": True,
             "message": "标题已更新"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/conversations/{conversation_id}/pin")
-async def toggle_conversation_pinned(conversation_id: int, request: TogglePinnedRequest):
+async def toggle_conversation_pinned(conversation_id: int, request: TogglePinnedRequest, user: TokenData = Depends(get_current_user)):
     try:
+        user_id = user.sub
         conversations_db.connect()
         memory_manager = MemoryManager()
+        conv = await memory_manager.get_conversation(conversation_id, user_id=user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="对话不存在或无权限")
         await memory_manager.set_conversation_pinned(conversation_id, request.pinned)
         return {
             "success": True,
             "message": "置顶状态已更新"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/conversations/{conversation_id}/archive")
-async def toggle_conversation_archived(conversation_id: int, request: ToggleArchiveRequest):
+async def toggle_conversation_archived(conversation_id: int, request: ToggleArchiveRequest, user: TokenData = Depends(get_current_user)):
     try:
+        user_id = user.sub
         conversations_db.connect()
         memory_manager = MemoryManager()
+        conv = await memory_manager.get_conversation(conversation_id, user_id=user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="对话不存在或无权限")
         await memory_manager.set_conversation_archived(conversation_id, request.archived)
         return {
             "success": True,
             "message": "归档状态已更新"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/conversations/{conversation_id}/group")
-async def toggle_conversation_group(conversation_id: int, request: ToggleGroupRequest):
+async def toggle_conversation_group(conversation_id: int, request: ToggleGroupRequest, user: TokenData = Depends(get_current_user)):
     try:
+        user_id = user.sub
         conversations_db.connect()
         memory_manager = MemoryManager()
+        conv = await memory_manager.get_conversation(conversation_id, user_id=user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="对话不存在或无权限")
         await memory_manager.set_conversation_group(conversation_id, request.is_group)
         return {
             "success": True,
             "message": "群聊状态已更新"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/conversations/{conversation_id}/share")
-async def share_conversation(conversation_id: int):
+async def share_conversation(conversation_id: int, user: TokenData = Depends(get_current_user)):
     try:
+        user_id = user.sub
         conversations_db.connect()
         memory_manager = MemoryManager()
-        conversation = await memory_manager.get_conversation(conversation_id)
+        conversation = await memory_manager.get_conversation(conversation_id, user_id=user_id)
         if not conversation:
-            raise HTTPException(status_code=404, detail="对话不存在")
+            raise HTTPException(status_code=404, detail="对话不存在或无权限")
         share_id = conversation.get("share_id") or uuid4().hex
         await memory_manager.set_conversation_share_id(conversation_id, share_id)
         return {
@@ -1760,24 +1793,33 @@ async def share_conversation(conversation_id: int):
 @router.post("/conversations/{conversation_id}/messages")
 async def send_message(
     conversation_id: int,
-    request: MessageRequest
+    request: MessageRequest,
+    user: TokenData = Depends(get_current_user)
 ):
     """发送消息"""
     try:
+        user_id = user.sub
         conversations_db.connect()
         memory_manager = MemoryManager()
-        
+
+        # 验证用户拥有该对话
+        conv = await memory_manager.get_conversation(conversation_id, user_id=user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="对话不存在或无权限")
+
         # 保存用户消息
         await memory_manager.save_message(
             conversation_id=conversation_id,
             role="user",
             content=request.content
         )
-        
+
         return {
             "success": True,
             "message": "消息已发送"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1785,18 +1827,25 @@ async def send_message(
 @router.get("/conversations/{conversation_id}/messages")
 async def get_messages(
     conversation_id: int,
-    limit: int = 100
+    limit: int = 100,
+    user: TokenData = Depends(get_current_user)
 ):
     """获取消息历史"""
     try:
+        user_id = user.sub
         conversations_db.connect()
         memory_manager = MemoryManager()
-        
+
+        # 验证用户拥有该对话
+        conv = await memory_manager.get_conversation(conversation_id, user_id=user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="对话不存在或无权限")
+
         messages = await memory_manager.get_messages(
             conversation_id=conversation_id,
             limit=limit
         )
-        
+
         return {
             "success": True,
             "data": {
@@ -1811,11 +1860,19 @@ async def get_messages(
 @router.post("/conversations/{conversation_id}/skills")
 async def generate_skill_from_conversation(
     conversation_id: int,
-    request: SkillGenerateRequest
+    request: SkillGenerateRequest,
+    user: TokenData = Depends(get_current_user)
 ):
     try:
+        user_id = user.sub
         conversations_db.connect()
         memory_manager = MemoryManager()
+
+        # 验证用户拥有该对话
+        conv = await memory_manager.get_conversation(conversation_id, user_id=user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="对话不存在或无权限")
+
         messages = await memory_manager.get_messages(
             conversation_id=conversation_id,
             limit=request.message_limit
@@ -2179,8 +2236,9 @@ async def read_file_content(path: str = Body(..., embed=True)):
 
 
 @router.post("/send")
-async def send_to_opencode(request: SendMessageRequest):
+async def send_to_opencode(request: SendMessageRequest, user: TokenData = Depends(get_current_user)):
     """发送消息到 OpenCode。支持多任务排队：如果该对话已有任务在运行，新任务会加入队列。"""
+    user_id = user.sub
     conv_id = str(request.conversation_id)
 
     # 构建包含附件内容的完整消息
@@ -2210,6 +2268,12 @@ async def send_to_opencode(request: SendMessageRequest):
     try:
         conversations_db.connect()
         memory_manager = MemoryManager()
+
+        # 验证用户拥有该对话
+        conv = await memory_manager.get_conversation(request.conversation_id, user_id=user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="对话不存在或无权限")
+
         content = await _execute_opencode(
             full_message,
             model=request.model,
@@ -2223,7 +2287,7 @@ async def send_to_opencode(request: SendMessageRequest):
                 role="assistant",
                 content=content
             )
-            conversation = await memory_manager.get_conversation(request.conversation_id)
+            conversation = await memory_manager.get_conversation(request.conversation_id, user_id=user_id)
             if conversation:
                 existing_title = conversation.get("title") or ""
                 if existing_title == "新对话" or existing_title.strip() == "":
@@ -2282,7 +2346,8 @@ def _part_to_stream_event(part: dict) -> Optional[dict]:
 
 
 @router.post("/send_stream")
-async def send_to_opencode_stream(request: SendMessageRequest):
+async def send_to_opencode_stream(request: SendMessageRequest, user: TokenData = Depends(get_current_user)):
+    user_id = user.sub
     conv_id = str(request.conversation_id)
     full_message = request.message
     if request.attached_files:
@@ -2522,9 +2587,18 @@ async def abort_task(request: AbortRequest):
 
 
 @router.get("/queue_status/{conversation_id}")
-async def get_queue_status(conversation_id: int, since_seq: int = 0):
+async def get_queue_status(conversation_id: int, since_seq: int = 0, user: TokenData = Depends(get_current_user)):
+    user_id = user.sub
     """获取对话的任务队列状态"""
     conv_id = str(conversation_id)
+
+    # 验证用户拥有该对话
+    conversations_db.connect()
+    memory_manager = MemoryManager()
+    conv = await memory_manager.get_conversation(conversation_id, user_id=user_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="对话不存在或无权限")
+
     queue_size = 0
     if conv_id in _task_queues:
         queue_size = _task_queues[conv_id].qsize()
@@ -2548,11 +2622,17 @@ class UndoMessageRequest(BaseModel):
 
 
 @router.post("/conversations/{conversation_id}/undo")
-async def undo_message(conversation_id: int, request: UndoMessageRequest):
+async def undo_message(conversation_id: int, request: UndoMessageRequest, user: TokenData = Depends(get_current_user)):
+    user_id = user.sub
     """撤销指定消息及其之后的所有消息"""
     try:
         conversations_db.connect()
         memory_manager = MemoryManager()
+
+        # 验证用户拥有该对话
+        conv = await memory_manager.get_conversation(conversation_id, user_id=user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="对话不存在或无权限")
 
         # 获取所有消息
         messages = await memory_manager.get_messages(conversation_id=conversation_id, limit=1000)

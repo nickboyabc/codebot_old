@@ -29,7 +29,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -41,7 +41,7 @@ const form = ref({
 const load = async () => {
   loading.value = true
   try {
-    const res = await axios.get('/api/config/integration')
+    const res = await request.get('/api/config/integration')
     const data = res.data?.data || {}
     form.value.modelscope_api_key = data.modelscope_api_key || ''
   } catch {
@@ -54,7 +54,7 @@ const load = async () => {
 const save = async () => {
   saving.value = true
   try {
-    await axios.patch('/api/config/integration', {
+    await request.patch('/api/config/integration', {
       modelscope_api_key: form.value.modelscope_api_key,
     })
     ElMessage.success('集成配置已保存')

@@ -44,6 +44,7 @@ class MemoryManager:
             CREATE TABLE IF NOT EXISTS conversations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
+                user_id INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_archived BOOLEAN DEFAULT 0,
@@ -119,6 +120,8 @@ class MemoryManager:
             cursor.execute("ALTER TABLE conversations ADD COLUMN is_group BOOLEAN DEFAULT 0")
         if "share_id" not in existing:
             cursor.execute("ALTER TABLE conversations ADD COLUMN share_id TEXT")
+        if "user_id" not in existing:
+            cursor.execute("ALTER TABLE conversations ADD COLUMN user_id INTEGER DEFAULT 1")
 
     def _ensure_long_term_memory_columns(self, cursor: sqlite3.Cursor):
         columns = cursor.execute("PRAGMA table_info(long_term_memories)").fetchall()
@@ -131,55 +134,77 @@ class MemoryManager:
                 "WHERE updated_at IS NULL"
             )
     
-    async def create_conversation(self, title: str = "新对话") -> int:
+    async def create_conversation(self, title: str = "新对话", user_id: int = 1) -> int:
         """创建对话"""
         cursor = self.sqlite_db.cursor()
         cursor.execute(
-            "INSERT INTO conversations (title) VALUES (?)",
-            (title,)
+            "INSERT INTO conversations (title, user_id) VALUES (?, ?)",
+            (title, user_id)
         )
         self.sqlite_db.commit()
         conversation_id = cursor.lastrowid
-        logger.info(f"创建对话：{conversation_id}")
+        logger.info(f"创建对话：{conversation_id} (user_id={user_id})")
         return conversation_id
-    
+
     async def get_conversations(
         self,
         limit: int = 50,
         offset: int = 0,
-        archived: bool = False
+        archived: bool = False,
+        user_id: int = None
     ) -> List[Dict]:
         """获取对话列表"""
         cursor = self.sqlite_db.cursor()
-        cursor.execute(
-            """SELECT * FROM conversations 
-               WHERE is_archived = ?
-               ORDER BY is_pinned DESC, updated_at DESC 
-               LIMIT ? OFFSET ?""",
-            (1 if archived else 0, limit, offset)
-        )
-        
+        if user_id is not None:
+            cursor.execute(
+                """SELECT * FROM conversations
+                   WHERE is_archived = ? AND user_id = ?
+                   ORDER BY is_pinned DESC, updated_at DESC
+                   LIMIT ? OFFSET ?""",
+                (1 if archived else 0, user_id, limit, offset)
+            )
+        else:
+            cursor.execute(
+                """SELECT * FROM conversations
+                   WHERE is_archived = ?
+                   ORDER BY is_pinned DESC, updated_at DESC
+                   LIMIT ? OFFSET ?""",
+                (1 if archived else 0, limit, offset)
+            )
+
         return [dict(row) for row in cursor.fetchall()]
-    
-    async def get_conversation(self, conversation_id: int) -> Optional[Dict]:
+
+    async def get_conversation(self, conversation_id: int, user_id: int = None) -> Optional[Dict]:
         """获取对话详情"""
         cursor = self.sqlite_db.cursor()
-        cursor.execute(
-            "SELECT * FROM conversations WHERE id = ?",
-            (conversation_id,)
-        )
+        if user_id is not None:
+            cursor.execute(
+                "SELECT * FROM conversations WHERE id = ? AND user_id = ?",
+                (conversation_id, user_id)
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM conversations WHERE id = ?",
+                (conversation_id,)
+            )
         row = cursor.fetchone()
         return dict(row) if row else None
     
-    async def delete_conversation(self, conversation_id: int):
+    async def delete_conversation(self, conversation_id: int, user_id: int = None):
         """删除对话"""
         cursor = self.sqlite_db.cursor()
-        cursor.execute(
-            "DELETE FROM conversations WHERE id = ?",
-            (conversation_id,)
-        )
+        if user_id is not None:
+            cursor.execute(
+                "DELETE FROM conversations WHERE id = ? AND user_id = ?",
+                (conversation_id, user_id)
+            )
+        else:
+            cursor.execute(
+                "DELETE FROM conversations WHERE id = ?",
+                (conversation_id,)
+            )
         self.sqlite_db.commit()
-        logger.info(f"删除对话：{conversation_id}")
+        logger.info(f"删除对话：{conversation_id} (user_id={user_id})")
 
     async def update_conversation_title(self, conversation_id: int, title: str):
         cursor = self.sqlite_db.cursor()

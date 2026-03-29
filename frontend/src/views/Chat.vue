@@ -65,14 +65,14 @@
                 <el-button text size="small">•••</el-button>
                 <template #dropdown>
                   <el-dropdown-menu>
-                    <el-dropdown-item command="share">分享</el-dropdown-item>
-                    <el-dropdown-item command="group">开始群聊</el-dropdown-item>
+                    <el-dropdown-item v-if="userStore.isAdmin" command="share">分享</el-dropdown-item>
+                    <el-dropdown-item v-if="userStore.isAdmin" command="group">开始群聊</el-dropdown-item>
                     <el-dropdown-item command="rename">重命名</el-dropdown-item>
-                    <el-dropdown-item :command="conv.is_pinned ? 'unpin' : 'pin'">
+                    <el-dropdown-item v-if="userStore.isAdmin" :command="conv.is_pinned ? 'unpin' : 'pin'">
                       {{ conv.is_pinned ? '取消置顶' : '置顶聊天' }}
                     </el-dropdown-item>
-                    <el-dropdown-item command="archive">归档</el-dropdown-item>
-                    <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                    <el-dropdown-item v-if="userStore.isAdmin" command="archive">归档</el-dropdown-item>
+                    <el-dropdown-item command="delete" :divided="!userStore.isAdmin">删除</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
@@ -403,10 +403,13 @@
 import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Grid, Delete, Refresh, VideoPlay, VideoPause, Upload, Close, Document, Paperclip, Picture } from '@element-plus/icons-vue'
-import axios from 'axios'
+import request from '../utils/request'
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
+import { useUserStore } from '../stores/user'
+
+const userStore = useUserStore()
 
 const assistantAvatarUrl = '/logo.png'
 
@@ -523,7 +526,7 @@ const processFiles = async (files) => {
     try {
       const formData = new FormData()
       formData.append('file', file)
-      const res = await axios.post('/api/chat/upload_file', formData, {
+      const res = await request.post('/api/chat/upload_file', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       })
       if (res.data?.success) {
@@ -602,7 +605,7 @@ const filteredCommands = computed(() => {
 
 const loadCommands = async () => {
   try {
-    const res = await axios.get('/api/chat/commands')
+    const res = await request.get('/api/chat/commands')
     if (res.data?.success) {
       allCommands.value = res.data.data.commands || []
       allSkillCommands.value = res.data.data.skills || []
@@ -648,7 +651,7 @@ let _atSearchTimer = null
 const searchAtFiles = async (query) => {
   atLoading.value = true
   try {
-    const res = await axios.get('/api/chat/files/search', { params: { query, limit: 15 } })
+    const res = await request.get('/api/chat/files/search', { params: { query, limit: 15 } })
     atFiles.value = res.data?.data?.files || []
   } catch (e) {
     atFiles.value = []
@@ -669,7 +672,7 @@ const selectAtFile = async (file) => {
 
   // 读取文件内容并加入附件
   try {
-    const res = await axios.post('/api/chat/read_file', { path: file.path })
+    const res = await request.post('/api/chat/read_file', { path: file.path })
     if (res.data?.success) {
       // 避免重复附加
       if (!attachedFiles.value.find(f => f.name === res.data.data.name && f.content === res.data.data.content)) {
@@ -746,7 +749,7 @@ const onInputChange = (val) => {
 const abortTask = async () => {
   aborting.value = true
   try {
-    await axios.post('/api/chat/abort', { conversation_id: currentConversationId.value })
+    await request.post('/api/chat/abort', { conversation_id: currentConversationId.value })
     ElMessage.success('已发送终止信号')
     queuedCount.value = 0
   } catch {
@@ -831,7 +834,7 @@ const fetchMemoryHints = async (query) => {
     return
   }
   try {
-    const res = await axios.get('/api/memory/hints', { params: { query: query.trim(), top_k: 5 } })
+    const res = await request.get('/api/memory/hints', { params: { query: query.trim(), top_k: 5 } })
     memoryHints.value = res.data?.data ?? []
   } catch {
     memoryHints.value = []
@@ -899,7 +902,7 @@ const batchDeleteConversations = async () => {
     let successCount = 0
     for (const id of ids) {
       try {
-        await axios.delete(`/api/chat/conversations/${id}`)
+        await request.delete(`/api/chat/conversations/${id}`)
         successCount++
         if (currentConversationId.value === id) {
           currentConversationId.value = null
@@ -1049,7 +1052,7 @@ const fetchQueueStatus = async (conversationId, options = {}) => {
   queueStatusSyncing.value = { ...queueStatusSyncing.value, [key]: true }
   try {
     const sinceSeq = Number(runtimeSeqByConversation.value[key] || 0)
-    const response = await axios.get(`/api/chat/queue_status/${key}`, { params: { since_seq: sinceSeq } })
+    const response = await request.get(`/api/chat/queue_status/${key}`, { params: { since_seq: sinceSeq } })
     const data = response.data?.data || {}
     const running = Boolean(data.running)
     const queued = Number(data.queued || 0)
@@ -1074,7 +1077,7 @@ const fetchQueueStatus = async (conversationId, options = {}) => {
       && !runtimeReloadDoneByConversation.value[key]
       && (previousRunning || hasDoneEvent || Boolean(runtimeAssistantIdByConversation.value[key]))
     if (shouldReloadAfterRuntime) {
-      const msgResp = await axios.get(`/api/chat/conversations/${key}/messages`)
+      const msgResp = await request.get(`/api/chat/conversations/${key}/messages`)
       messages.value = msgResp.data?.data?.items || []
       runtimeAssistantIdByConversation.value = { ...runtimeAssistantIdByConversation.value, [key]: null }
       runtimeEventSeqSeen.value = { ...runtimeEventSeqSeen.value, [key]: [] }
@@ -1110,7 +1113,7 @@ const getMostRecentConversationId = (items) => {
 
 const loadConversations = async (autoSelect = false) => {
   try {
-    const response = await axios.get('/api/chat/conversations')
+    const response = await request.get('/api/chat/conversations')
     conversations.value = response.data.data.items || []
     if (autoSelect && !currentConversationId.value && conversations.value.length > 0) {
       const lastIdRaw = localStorage.getItem(LAST_CONVERSATION_KEY)
@@ -1130,7 +1133,7 @@ const loadConversations = async (autoSelect = false) => {
 const loadModels = async () => {
   modelsLoading.value = true
   try {
-    const res = await axios.get('/api/chat/models')
+    const res = await request.get('/api/chat/models')
     const raw = res.data?.data?.models || []
     const newList = raw.map(m => {
       if (typeof m === 'string') return { id: m, name: m, provider: '', model: m }
@@ -1162,7 +1165,7 @@ const loadModels = async () => {
 // 创建新对话
 const createNewConversation = async () => {
   try {
-    const response = await axios.post('/api/chat/conversations')
+    const response = await request.post('/api/chat/conversations')
     const conversation = response.data.data
     conversations.value.unshift(conversation)
     await selectConversation(conversation.id)
@@ -1177,7 +1180,7 @@ const selectConversation = async (conversationId) => {
   currentConversationId.value = conversationId
   localStorage.setItem(LAST_CONVERSATION_KEY, String(conversationId))
   try {
-    const response = await axios.get(`/api/chat/conversations/${conversationId}/messages`)
+    const response = await request.get(`/api/chat/conversations/${conversationId}/messages`)
     messages.value = response.data.data.items || []
     runtimeAssistantIdByConversation.value = { ...runtimeAssistantIdByConversation.value, [conversationId]: null }
     runtimeEventSeqSeen.value = { ...runtimeEventSeqSeen.value, [conversationId]: [] }
@@ -1226,9 +1229,13 @@ const scheduleStreamScroll = () => {
 }
 
 const streamChatResponse = async (payload, onEvent) => {
+  const token = localStorage.getItem('token') || ''
   const response = await fetch('/api/chat/send_stream', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
     body: JSON.stringify(payload)
   })
   if (!response.ok || !response.body) {
@@ -1293,9 +1300,9 @@ const sendMessage = async () => {
     scrollToBottom(true)
     try {
       // Save user message to DB
-      await axios.post(`/api/chat/conversations/${conversationId}/messages`, { content: displayContent })
+      await request.post(`/api/chat/conversations/${conversationId}/messages`, { content: displayContent })
       // Send to OpenCode (will be queued on backend)
-      const response = await axios.post('/api/chat/send', {
+      const response = await request.post('/api/chat/send', {
         conversation_id: conversationId,
         message: content,
         model: selectedModel.value || null,
@@ -1315,7 +1322,7 @@ const sendMessage = async () => {
   incrementLoading(conversationId)
 
   try {
-    await axios.post(`/api/chat/conversations/${conversationId}/messages`, {
+    await request.post(`/api/chat/conversations/${conversationId}/messages`, {
       content: displayContent
     })
 
@@ -1448,7 +1455,7 @@ const generateSkill = async () => {
   }
   generatingSkill.value = true
   try {
-    const response = await axios.post('/api/skills/generate', {
+    const response = await request.post('/api/skills/generate', {
       description: skillGenDescription.value.trim()
     })
     ElMessage.success(response.data.message || '技能已生成，可在技能页面查看')
@@ -1471,12 +1478,12 @@ const undoFromMessage = async (msg) => {
       '撤销消息',
       { confirmButtonText: '撤销', cancelButtonText: '取消', type: 'warning' }
     )
-    await axios.post(`/api/chat/conversations/${currentConversationId.value}/undo`, {
+    await request.post(`/api/chat/conversations/${currentConversationId.value}/undo`, {
       message_id: msg.id,
       conversation_id: currentConversationId.value
     })
     // Reload messages to reflect the deletion
-    const response = await axios.get(`/api/chat/conversations/${currentConversationId.value}/messages`)
+    const response = await request.get(`/api/chat/conversations/${currentConversationId.value}/messages`)
     messages.value = response.data.data.items || []
     ElMessage.success('已撤销')
   } catch (error) {
@@ -1493,7 +1500,7 @@ const deleteConversation = async (conversationId) => {
       cancelButtonText: '取消',
       type: 'warning'
     })
-    await axios.delete(`/api/chat/conversations/${conversationId}`)
+    await request.delete(`/api/chat/conversations/${conversationId}`)
     if (currentConversationId.value === conversationId) {
       currentConversationId.value = null
       messages.value = []
@@ -1519,7 +1526,7 @@ const renameConversation = async (conversationId, currentTitle) => {
       ElMessage.warning('标题不能为空')
       return
     }
-    await axios.patch(`/api/chat/conversations/${conversationId}/title`, { title: newTitle })
+    await request.patch(`/api/chat/conversations/${conversationId}/title`, { title: newTitle })
     await loadConversations()
     ElMessage.success('标题已更新')
   } catch (error) {
@@ -1531,7 +1538,7 @@ const renameConversation = async (conversationId, currentTitle) => {
 
 const togglePinConversation = async (conversationId, pinned) => {
   try {
-    await axios.post(`/api/chat/conversations/${conversationId}/pin`, { pinned })
+    await request.post(`/api/chat/conversations/${conversationId}/pin`, { pinned })
     await loadConversations()
     ElMessage.success(pinned ? '已置顶' : '已取消置顶')
   } catch (error) {
@@ -1541,7 +1548,7 @@ const togglePinConversation = async (conversationId, pinned) => {
 
 const archiveConversation = async (conversationId) => {
   try {
-    await axios.post(`/api/chat/conversations/${conversationId}/archive`, { archived: true })
+    await request.post(`/api/chat/conversations/${conversationId}/archive`, { archived: true })
     if (currentConversationId.value === conversationId) {
       currentConversationId.value = null
       messages.value = []
@@ -1555,7 +1562,7 @@ const archiveConversation = async (conversationId) => {
 
 const startGroupConversation = async (conversationId) => {
   try {
-    await axios.post(`/api/chat/conversations/${conversationId}/group`, { is_group: true })
+    await request.post(`/api/chat/conversations/${conversationId}/group`, { is_group: true })
     await loadConversations()
     ElMessage.success('群聊已开启')
   } catch (error) {
@@ -1565,7 +1572,7 @@ const startGroupConversation = async (conversationId) => {
 
 const shareConversation = async (conversationId) => {
   try {
-    const response = await axios.post(`/api/chat/conversations/${conversationId}/share`)
+    const response = await request.post(`/api/chat/conversations/${conversationId}/share`)
     const sharePath = response.data.data.share_path
     const shareUrl = `${window.location.origin}${sharePath}`
     await copyToClipboard(shareUrl)

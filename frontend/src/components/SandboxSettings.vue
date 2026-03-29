@@ -160,7 +160,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const status = ref({})
 const form = ref({
@@ -209,7 +209,7 @@ const hasUnsavedChanges = computed(() => {
 
 const refreshStatus = async () => {
   try {
-    const res = await axios.get('/api/sandbox/status')
+    const res = await request.get('/api/sandbox/status')
     status.value = res.data.data || {}
   } catch {
     // ignore
@@ -218,7 +218,7 @@ const refreshStatus = async () => {
 
 const loadConfig = async () => {
   try {
-    const res = await axios.get('/api/sandbox/config')
+    const res = await request.get('/api/sandbox/config')
     const cfg = snapshotConfig(res.data.data || {})
     Object.assign(form.value, cfg)
     lastSavedConfig.value = cfg
@@ -232,7 +232,7 @@ const save = async (options = {}) => {
   saving.value = true
   try {
     const payload = snapshotConfig(form.value)
-    const res = await axios.patch('/api/sandbox/config', payload)
+    const res = await request.patch('/api/sandbox/config', payload)
     const savedConfig = snapshotConfig(res.data.data || payload)
     Object.assign(form.value, savedConfig)
     lastSavedConfig.value = savedConfig
@@ -249,7 +249,7 @@ const save = async (options = {}) => {
 
 const prepare = async () => {
   try {
-    await axios.post('/api/sandbox/prepare')
+    await request.post('/api/sandbox/prepare')
     await refreshStatus()
     ElMessage.success('沙箱工作目录已就绪')
   } catch (e) {
@@ -265,7 +265,7 @@ const runTest = async () => {
     if (hasUnsavedChanges.value) {
       await save({ silent: true })
     }
-    const res = await axios.post('/api/sandbox/test', { prompt: 'echo hello from sandbox' })
+    const res = await request.post('/api/sandbox/test', { prompt: 'echo hello from sandbox' })
     testResult.value = {
       ...(res.data.data || {}),
       success: !!res.data.success,

@@ -48,7 +48,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const form = ref({
   enabled: false,
@@ -66,8 +66,8 @@ const form = ref({
 const loadConfig = async () => {
   try {
     const [notifyResponse, botResponse] = await Promise.all([
-      axios.get('/api/notifications/config'),
-      axios.get('/api/lark/config')
+      request.get('/api/notifications/config'),
+      request.get('/api/lark/config')
     ])
     const notifyConfig = notifyResponse.data.data
     const botConfig = botResponse.data.data
@@ -91,12 +91,12 @@ const loadConfig = async () => {
 const save = async () => {
   try {
     await Promise.all([
-      axios.put('/api/notifications/config', {
+      request.put('/api/notifications/config', {
         lark_enabled: form.value.enabled,
         lark_webhook_url: form.value.webhook_url,
         lark_secret: form.value.secret
       }),
-      axios.put('/api/lark/config', {
+      request.put('/api/lark/config', {
         enabled: form.value.bot_enabled,
         connection_mode: form.value.connection_mode,
         app_id: form.value.app_id,

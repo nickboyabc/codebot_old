@@ -56,14 +56,14 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Folder, Delete, Plus } from '@element-plus/icons-vue'
-import axios from 'axios'
+import request from '../utils/request'
 
 const customDirs = ref([])
 const saving = ref(false)
 
 const loadConfig = async () => {
   try {
-    const response = await axios.get('/api/config/skills')
+    const response = await request.get('/api/config/skills')
     const data = response.data.data
     customDirs.value = data.custom_skill_dirs || []
   } catch (error) {
@@ -87,7 +87,7 @@ const save = async () => {
   
   saving.value = true
   try {
-    await axios.put('/api/config/skills', {
+    await request.put('/api/config/skills', {
       custom_skill_dirs: dirs
     })
     customDirs.value = dirs

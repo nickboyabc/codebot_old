@@ -121,7 +121,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const CATEGORIES = [
   { value: 'habit',      label: '习惯' },
@@ -174,7 +174,7 @@ const loadMemories = async () => {
     const params = {}
     if (filterCategory.value) params.category = filterCategory.value
     params.with_stats = true
-    const response = await axios.get('/api/memory/memories', { params })
+    const response = await request.get('/api/memory/memories', { params })
     memories.value = response.data.data.items || []
     const meta = response.data.meta || {}
     const counts = meta.storage_counts || {}
@@ -195,7 +195,7 @@ const loadMemories = async () => {
 
 const archiveMemory = async (id) => {
   try {
-    await axios.post(`/api/memory/memories/${id}/archive`)
+    await request.post(`/api/memory/memories/${id}/archive`)
     ElMessage.success('已归档')
     loadMemories()
   } catch (error) {
@@ -205,7 +205,7 @@ const archiveMemory = async (id) => {
 
 const deleteMemory = async (id) => {
   try {
-    await axios.delete(`/api/memory/memories/${id}`)
+    await request.delete(`/api/memory/memories/${id}`)
     ElMessage.success('已删除')
     loadMemories()
   } catch (error) {
@@ -220,7 +220,7 @@ const createMemory = async () => {
   }
   creating.value = true
   try {
-    await axios.post('/api/memory/memories', {
+    await request.post('/api/memory/memories', {
       category: newMemory.value.category || 'habit',
       content: newMemory.value.content
     })
@@ -249,7 +249,7 @@ const triggerOrganize = async () => {
   organizing.value = true
   organizeStatus.value = ''
   try {
-    const resp = await axios.post('/api/memory/organize')
+    const resp = await request.post('/api/memory/organize')
     if (resp.data.success) {
       organizeStatus.value = '整理任务已在后台运行...'
       ElMessage.success('整理任务已启动，完成后列表将自动更新')
@@ -271,8 +271,8 @@ const runMemorySelfCheck = async () => {
   selfChecking.value = true
   try {
     const [statusResp, listResp] = await Promise.all([
-      axios.get('/api/memory/storage-status'),
-      axios.get('/api/memory/memories', {
+      request.get('/api/memory/storage-status'),
+      request.get('/api/memory/memories', {
         params: { with_stats: true, limit: 1, offset: 0 }
       })
     ])
@@ -337,7 +337,7 @@ const pollOrganizeStatus = async () => {
   const timer = setInterval(async () => {
     attempts++
     try {
-      const resp = await axios.get('/api/memory/organize/status')
+      const resp = await request.get('/api/memory/organize/status')
       const data = resp.data.data || {}
       if (!data.running) {
         clearInterval(timer)

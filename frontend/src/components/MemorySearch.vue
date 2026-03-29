@@ -45,7 +45,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const query = ref('')
 const category = ref('')
@@ -66,7 +66,7 @@ const categories = [
 
 const loadConfig = async () => {
   try {
-    const response = await axios.get('/api/memory/config')
+    const response = await request.get('/api/memory/config')
     const enabled = Boolean(response.data?.data?.show_archived_in_search)
     includeArchived.value = enabled
     includeArchivedDefault.value = enabled
@@ -89,7 +89,7 @@ const searchMemories = async () => {
       include_archived: includeArchived.value
     }
     if (category.value) params.category = category.value
-    const response = await axios.get('/api/memory/memories/search', { params })
+    const response = await request.get('/api/memory/memories/search', { params })
     results.value = response.data.data || []
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '搜索失败')

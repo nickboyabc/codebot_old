@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import axios from 'axios'
+import request from '../utils/request'
 
 export const useNotificationStore = defineStore('notification', {
   state: () => ({
@@ -17,7 +17,7 @@ export const useNotificationStore = defineStore('notification', {
   actions: {
     async fetchNotifications() {
       try {
-        const response = await axios.get('/api/notifications')
+        const response = await request.get('/api/notifications')
         this.notifications = response.data.data || []
       } catch (error) {
         console.error('获取通知失败:', error)
@@ -26,7 +26,7 @@ export const useNotificationStore = defineStore('notification', {
     
     async fetchUnreadCount() {
       try {
-        const response = await axios.get('/api/notifications/unread-count')
+        const response = await request.get('/api/notifications/unread-count')
         this.unreadCount = response.data.count || 0
       } catch (error) {
         console.error('获取未读数失败:', error)
@@ -35,7 +35,7 @@ export const useNotificationStore = defineStore('notification', {
     
     async fetchConfig() {
       try {
-        const response = await axios.get('/api/notifications/config')
+        const response = await request.get('/api/notifications/config')
         this.config = response.data.data || { poll_interval: 30 }
       } catch (error) {
         console.error('获取通知配置失败:', error)
@@ -44,7 +44,7 @@ export const useNotificationStore = defineStore('notification', {
     
     async markAsRead(id) {
       try {
-        await axios.put(`/api/notifications/${id}/read`)
+        await request.put(`/api/notifications/${id}/read`)
         await this.fetchUnreadCount()
       } catch (error) {
         console.error('标记已读失败:', error)
@@ -53,7 +53,7 @@ export const useNotificationStore = defineStore('notification', {
     
     async markAllAsRead() {
       try {
-        await axios.put('/api/notifications/read-all')
+        await request.put('/api/notifications/read-all')
         await this.fetchUnreadCount()
       } catch (error) {
         console.error('标记全部已读失败:', error)
@@ -62,7 +62,7 @@ export const useNotificationStore = defineStore('notification', {
     
     async clearNotifications() {
       try {
-        await axios.delete('/api/notifications')
+        await request.delete('/api/notifications')
         this.notifications = []
         this.unreadCount = 0
       } catch (error) {

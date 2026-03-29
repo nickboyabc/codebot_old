@@ -113,7 +113,7 @@ import { ElMessage } from 'element-plus'
 import { Loading, CopyDocument } from '@element-plus/icons-vue'
 
 const form = ref({
-  app_name: 'Codebot',
+  app_name: '盐城港Agent',
   language: 'zh-CN',
   auto_start: false,
   compact_mode: false

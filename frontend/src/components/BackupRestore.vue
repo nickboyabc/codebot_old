@@ -88,7 +88,7 @@
 <script setup>
 import { ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const exporting = ref(false)
 const importing = ref(false)
@@ -102,7 +102,7 @@ const handleExport = async () => {
   exporting.value = true
   exportResult.value = null
   try {
-    const response = await axios.post('/api/memory/export')
+    const response = await request.post('/api/memory/export')
     const data = response.data
     exportResult.value = {
       success: data.success,
@@ -148,7 +148,7 @@ const handleImport = async () => {
     const formData = new FormData()
     formData.append('file', selectedFile.value)
 
-    const response = await axios.post('/api/memory/import', formData, {
+    const response = await request.post('/api/memory/import', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
     const data = response.data

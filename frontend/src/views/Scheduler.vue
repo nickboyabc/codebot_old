@@ -81,7 +81,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const tasks = ref([])
 const showCreateDialog = ref(false)
@@ -97,7 +97,7 @@ const aiLoading = ref(false)
 
 const loadTasks = async () => {
   try {
-    const response = await axios.get('/api/scheduler/tasks')
+    const response = await request.get('/api/scheduler/tasks')
     tasks.value = response.data.data || []
   } catch (error) {
     ElMessage.error('加载任务失败')
@@ -109,7 +109,7 @@ const generateWithAI = async () => {
   
   aiLoading.value = true
   try {
-    const response = await axios.post('/api/scheduler/ai-generate', {
+    const response = await request.post('/api/scheduler/ai-generate', {
       prompt: aiPrompt.value
     })
     const result = response.data.data
@@ -125,7 +125,7 @@ const generateWithAI = async () => {
 const saveTask = async () => {
   try {
     if (editMode.value) {
-      await axios.put(`/api/scheduler/tasks/${newTask.value.id}`, {
+      await request.put(`/api/scheduler/tasks/${newTask.value.id}`, {
         name: newTask.value.name,
         cron_expression: newTask.value.cron_expression,
         task_prompt: newTask.value.task_prompt,
@@ -134,7 +134,7 @@ const saveTask = async () => {
       })
       ElMessage.success('任务已更新')
     } else {
-      await axios.post('/api/scheduler/tasks', newTask.value)
+      await request.post('/api/scheduler/tasks', newTask.value)
       ElMessage.success('任务创建成功')
     }
     showCreateDialog.value = false
@@ -147,7 +147,7 @@ const saveTask = async () => {
 
 const runTaskNow = async (task) => {
   try {
-    await axios.post(`/api/scheduler/tasks/${task.id}/run`)
+    await request.post(`/api/scheduler/tasks/${task.id}/run`)
     ElMessage.success('任务执行中')
   } catch (error) {
     ElMessage.error('执行失败')
@@ -156,7 +156,7 @@ const runTaskNow = async (task) => {
 
 const toggleTask = async (task) => {
   try {
-    await axios.put(`/api/scheduler/tasks/${task.id}`, {
+    await request.put(`/api/scheduler/tasks/${task.id}`, {
       enabled: task.enabled
     })
   } catch (error) {
@@ -166,7 +166,7 @@ const toggleTask = async (task) => {
 
 const deleteTask = async (task) => {
   try {
-    await axios.delete(`/api/scheduler/tasks/${task.id}`)
+    await request.delete(`/api/scheduler/tasks/${task.id}`)
     ElMessage.success('已删除')
     loadTasks()
   } catch (error) {

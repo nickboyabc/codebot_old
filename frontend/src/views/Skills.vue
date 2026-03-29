@@ -172,7 +172,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download, Search, MagicStick, Link } from '@element-plus/icons-vue'
-import axios from 'axios'
+import request from '../utils/request'
 
 const skills = ref([])
 const loading = ref(false)
@@ -221,7 +221,7 @@ const sourceTagType = (source) => {
 const loadSkills = async () => {
   loading.value = true
   try {
-    const response = await axios.get('/api/skills')
+    const response = await request.get('/api/skills')
     skills.value = response.data.data.items || []
   } catch (error) {
     ElMessage.error('加载技能列表失败')
@@ -237,7 +237,7 @@ const installSkill = async () => {
   }
   installing.value = true
   try {
-    await axios.post('/api/skills', {
+    await request.post('/api/skills', {
       name: installForm.value.name,
       description: installForm.value.description,
       version: installForm.value.version || '1.0.0',
@@ -261,7 +261,7 @@ const generateSkill = async () => {
   }
   generating.value = true
   try {
-    const response = await axios.post('/api/skills/generate', {
+    const response = await request.post('/api/skills/generate', {
       description: generateDescription.value.trim()
     })
     ElMessage.success(response.data.message || '技能已生成')
@@ -279,7 +279,7 @@ const generateSkill = async () => {
 const toggleSkill = async (skill) => {
   try {
     skill.updating = true
-    await axios.patch(`/api/skills/${skill.id}`, {
+    await request.patch(`/api/skills/${skill.id}`, {
       enabled: !skill.enabled
     })
     skill.enabled = !skill.enabled
@@ -299,7 +299,7 @@ const deleteSkill = async (skill) => {
       type: 'warning'
     })
     skill.deleting = true
-    await axios.delete(`/api/skills/${skill.id}`)
+    await request.delete(`/api/skills/${skill.id}`)
     ElMessage.success('技能已卸载')
     await loadSkills()
   } catch (error) {
@@ -340,7 +340,7 @@ const batchDelete = async () => {
       type: 'warning'
     })
     batchDeleting.value = true
-    const response = await axios.post('/api/skills/batch-delete', { ids: selectedIds.value })
+    const response = await request.post('/api/skills/batch-delete', { ids: selectedIds.value })
     ElMessage.success(response.data.message || '批量卸载完成')
     selectedIds.value = []
     batchMode.value = false

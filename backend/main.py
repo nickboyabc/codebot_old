@@ -19,6 +19,7 @@ from loguru import logger
 
 from config import settings, app_config
 from database.init_db import conversations_db, tasks_db
+from database.auth_db import auth_db, get_auth_db
 from core.opencode_ws import OpenCodeClient
 from core.memory_manager import MemoryManager
 from core.memory_organizer import run_organize_loop
@@ -30,6 +31,7 @@ from utils.installer import check_and_install_opencode, start_opencode_server, s
 
 # 导入 API 路由
 from api.routes import chat, memory, scheduler as scheduler_router, skills, notifications, logs, lark, mcp as mcp_router, config as config_router, sandbox as sandbox_router
+from api.routes import auth, users, audit
 
 
 # 全局组件实例
@@ -139,8 +141,14 @@ async def lifespan(app: FastAPI):
     conversations_db.init_tables()
     tasks_db.connect()
     tasks_db.init_tables()
-    
-    # 5. 初始化核心组件
+
+    # 5. 初始化认证数据库
+    logger.info("初始化认证数据库...")
+    auth_db.connect()
+    auth_db.init_tables()
+    auth_db.create_default_users()
+
+    # 6. 初始化核心组件
     logger.info("初始化核心组件...")
     global opencode_ws, memory_manager, notification_service, lark_ws_bot, sandbox_manager
     
@@ -298,7 +306,8 @@ async def lifespan(app: FastAPI):
 
     conversations_db.close()
     tasks_db.close()
-    
+    auth_db.close()
+
     logger.info("Codebot 已关闭")
 
 
@@ -338,14 +347,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS 配置 (支持局域网访问)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS 配置 (使用配置文件中的设置)
+if app_config.cors.enabled:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=app_config.cors.allow_origins,
+        allow_credentials=app_config.cors.allow_credentials,
+        allow_methods=app_config.cors.allow_methods,
+        allow_headers=app_config.cors.allow_headers,
+    )
 
 # 注册 API 路由
 app.include_router(chat.router, prefix="/api/chat", tags=["聊天"])
@@ -357,6 +367,9 @@ app.include_router(config_router.router, prefix="/api/config", tags=["配置"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["通知"])
 app.include_router(lark.router, prefix="/api/lark", tags=["飞书"])
 app.include_router(sandbox_router.router, prefix="/api/sandbox", tags=["沙箱"])
+app.include_router(auth.router, tags=["认证"])
+app.include_router(users.router, tags=["用户管理"])
+app.include_router(audit.router, tags=["审计"])
 
 
 @app.get("/api/health")

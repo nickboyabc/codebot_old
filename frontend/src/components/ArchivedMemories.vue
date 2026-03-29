@@ -17,13 +17,13 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const memories = ref([])
 
 const loadMemories = async () => {
   try {
-    const response = await axios.get('/api/memory/memories?archived=true')
+    const response = await request.get('/api/memory/memories?archived=true')
     memories.value = response.data.data.items || []
   } catch (error) {
     ElMessage.error('加载记忆失败')
@@ -32,7 +32,7 @@ const loadMemories = async () => {
 
 const restoreMemory = async (id) => {
   try {
-    await axios.post(`/api/memory/memories/${id}/restore`)
+    await request.post(`/api/memory/memories/${id}/restore`)
     ElMessage.success('已恢复')
     loadMemories()
   } catch (error) {
@@ -42,7 +42,7 @@ const restoreMemory = async (id) => {
 
 const deleteMemory = async (id) => {
   try {
-    await axios.delete(`/api/memory/memories/${id}`)
+    await request.delete(`/api/memory/memories/${id}`)
     ElMessage.success('已删除')
     loadMemories()
   } catch (error) {

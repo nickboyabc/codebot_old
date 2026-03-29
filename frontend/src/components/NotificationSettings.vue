@@ -27,7 +27,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const form = ref({
   app_enabled: true,
@@ -39,7 +39,7 @@ const form = ref({
 
 const loadConfig = async () => {
   try {
-    const response = await axios.get('/api/notifications/config')
+    const response = await request.get('/api/notifications/config')
     const config = response.data.data
     form.value = {
       app_enabled: config.app_enabled,
@@ -55,7 +55,7 @@ const loadConfig = async () => {
 
 const save = async () => {
   try {
-    await axios.put('/api/notifications/config', form.value)
+    await request.put('/api/notifications/config', form.value)
     ElMessage.success('配置已保存')
   } catch (error) {
     ElMessage.error('保存失败')

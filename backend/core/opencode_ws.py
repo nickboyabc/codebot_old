@@ -88,6 +88,9 @@ class OpenCodeClient:
             ""
         ))
 
+    # 默认模型：使用 OpenCode Coding Plan 认证（auth.json 中的 minimax-cn-coding-plan）
+    DEFAULT_MODEL = "minimax-cn-coding-plan/MiniMax-M2.7"
+
     def _build_prompt_payload(self, prompt: str, model: Optional[str] = None, mode: Optional[str] = None) -> dict:
         actual_prompt = prompt
         if mode == "plan":
@@ -108,12 +111,13 @@ class OpenCodeClient:
                 }
             ]
         }
-        if model:
-            if "/" in model:
-                provider_id, model_id = model.split("/", 1)
+        effective_model = model or self.DEFAULT_MODEL
+        if effective_model:
+            if "/" in effective_model:
+                provider_id, model_id = effective_model.split("/", 1)
                 payload["model"] = {"providerID": provider_id, "modelID": model_id}
             else:
-                payload["model"] = {"modelID": model}
+                payload["model"] = {"modelID": effective_model}
         return payload
 
     def _extract_event_session_id(self, properties: dict) -> Optional[str]:

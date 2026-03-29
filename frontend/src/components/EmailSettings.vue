@@ -33,7 +33,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const form = ref({
   enabled: false,
@@ -48,7 +48,7 @@ const testing = ref(false)
 
 const loadConfig = async () => {
   try {
-    const response = await axios.get('/api/notifications/config')
+    const response = await request.get('/api/notifications/config')
     const config = response.data.data
     form.value = {
       enabled: config.email_enabled,
@@ -70,7 +70,7 @@ const save = async () => {
       .split(',')
       .map(item => item.trim())
       .filter(item => item.length > 0)
-    await axios.put('/api/notifications/config', {
+    await request.put('/api/notifications/config', {
       email_enabled: form.value.enabled,
       email_smtp_host: form.value.smtp_host,
       email_smtp_port: form.value.smtp_port,
@@ -93,7 +93,7 @@ const testEmail = async () => {
       .map(item => item.trim())
       .filter(item => item.length > 0)
     const recipient = emailList[0] || form.value.email_from || form.value.username
-    await axios.post('/api/notifications/test-email', { recipient })
+    await request.post('/api/notifications/test-email', { recipient })
     ElMessage.success('测试邮件发送成功，请检查收件箱')
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '测试邮件发送失败')

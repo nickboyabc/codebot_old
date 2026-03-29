@@ -273,7 +273,7 @@ import {
   Search, Plus, Link, Delete, QuestionFilled, Warning,
   Connection, TopRight, Edit, MoreFilled
 } from '@element-plus/icons-vue'
-import axios from 'axios'
+import request from '../utils/request'
 
 // ── 数据 ──────────────────────────────────────────────────────────────────
 const servers = ref([])
@@ -332,7 +332,7 @@ const filteredServers = computed(() => {
 const loadServers = async () => {
   loading.value = true
   try {
-    const res = await axios.get('/api/mcp')
+    const res = await request.get('/api/mcp')
     servers.value = (res.data.data.items || []).map(s => ({ ...s, _toggling: false, _deleting: false }))
   } catch {
     ElMessage.error('加载 MCP 服务器列表失败')
@@ -343,7 +343,7 @@ const loadServers = async () => {
 
 const loadMsApiKey = async () => {
   try {
-    const res = await axios.get('/api/config/integration')
+    const res = await request.get('/api/config/integration')
     msApiKey.value = res.data?.data?.modelscope_api_key || ''
   } catch {
     msApiKey.value = ''
@@ -358,7 +358,7 @@ const addMsServer = async () => {
   try {
     const url = `https://mcp.api-inference.modelscope.cn/sse/${svc}`
     const name = msDisplayName.value.trim() || svc
-    await axios.post('/api/mcp', {
+    await request.post('/api/mcp', {
       name,
       description: `ModelScope MCP: ${svc}`,
       transport: 'sse',
@@ -431,10 +431,10 @@ const submitForm = async () => {
       enabled: form.enabled,
     }
     if (editingServer.value) {
-      await axios.patch(`/api/mcp/${editingServer.value.id}`, payload)
+      await request.patch(`/api/mcp/${editingServer.value.id}`, payload)
       ElMessage.success('MCP 服务器已更新')
     } else {
-      await axios.post('/api/mcp', payload)
+      await request.post('/api/mcp', payload)
       ElMessage.success('MCP 服务器已添加')
     }
     showDialog.value = false
@@ -449,7 +449,7 @@ const submitForm = async () => {
 const toggleServer = async (server) => {
   server._toggling = true
   try {
-    const res = await axios.post(`/api/mcp/${server.id}/toggle`)
+    const res = await request.post(`/api/mcp/${server.id}/toggle`)
     const newEnabled = res.data.data?.enabled ?? !server.enabled
     server.enabled = newEnabled
     ElMessage.success(newEnabled ? '已启用' : '已禁用')
@@ -468,7 +468,7 @@ const deleteServer = async (server) => {
       { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' }
     )
     server._deleting = true
-    await axios.delete(`/api/mcp/${server.id}`)
+    await request.delete(`/api/mcp/${server.id}`)
     ElMessage.success('已删除')
     await loadServers()
   } catch (err) {

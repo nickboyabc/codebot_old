@@ -95,7 +95,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const config = ref({
   auto_cleanup_enabled: false,
@@ -134,7 +134,7 @@ const onOrganizeTimeChange = (val) => {
 
 const loadConfig = async () => {
   try {
-    const response = await axios.get('/api/memory/config')
+    const response = await request.get('/api/memory/config')
     config.value = { ...config.value, ...response.data.data }
     organizeTimeDate.value = config.value.organize_time || '03:00'
   } catch (error) {
@@ -145,7 +145,7 @@ const loadConfig = async () => {
 const saveConfig = async () => {
   try {
     config.value.organize_time = organizeTimeDate.value || '03:00'
-    await axios.put('/api/memory/config', config.value)
+    await request.put('/api/memory/config', config.value)
     ElMessage.success('配置已保存')
   } catch (error) {
     ElMessage.error('保存失败')
@@ -155,7 +155,7 @@ const saveConfig = async () => {
 const triggerOrganize = async () => {
   organizing.value = true
   try {
-    const resp = await axios.post('/api/memory/organize')
+    const resp = await request.post('/api/memory/organize')
     if (resp.data.success) {
       showOrganizeResult.value = true
     } else {

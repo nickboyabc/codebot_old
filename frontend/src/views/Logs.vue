@@ -176,7 +176,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, View } from '@element-plus/icons-vue'
-import axios from 'axios'
+import request from '../utils/request'
 
 const logs = ref([])
 const tasks = ref([])
@@ -237,7 +237,7 @@ const formatNotifyChannels = (channels) => {
 const loadLogs = async () => {
   try {
     const offset = (currentPage.value - 1) * pageSize.value
-    const response = await axios.get('/api/logs/task-logs', {
+    const response = await request.get('/api/logs/task-logs', {
       params: {
         task_id: filterTaskId.value || undefined,
         limit: pageSize.value,
@@ -284,7 +284,7 @@ const deleteSingleLog = async (log) => {
       cancelButtonText: '取消',
       type: 'warning'
     })
-    await axios.delete(`/api/logs/task-logs/${log.id}`)
+    await request.delete(`/api/logs/task-logs/${log.id}`)
     ElMessage.success('日志已删除')
     await loadLogs()
   } catch (error) {
@@ -301,7 +301,7 @@ const deleteFromDetail = async (log) => {
       cancelButtonText: '取消',
       type: 'warning'
     })
-    await axios.delete(`/api/logs/task-logs/${log.id}`)
+    await request.delete(`/api/logs/task-logs/${log.id}`)
     ElMessage.success('日志已删除')
     detailVisible.value = false
     await loadLogs()
@@ -324,7 +324,7 @@ const batchDeleteLogs = async () => {
         type: 'warning'
       }
     )
-    await axios.post('/api/logs/task-logs/batch-delete', { ids: selectedLogIds.value })
+    await request.post('/api/logs/task-logs/batch-delete', { ids: selectedLogIds.value })
     ElMessage.success(`已删除 ${selectedLogIds.value.length} 条日志`)
     clearSelection()
     await loadLogs()
@@ -337,7 +337,7 @@ const batchDeleteLogs = async () => {
 
 const loadConfig = async () => {
   try {
-    const response = await axios.get('/api/logs/config')
+    const response = await request.get('/api/logs/config')
     logConfig.value = response.data.data
     retentionDays.value = logConfig.value.task_log_retention_days
   } catch (error) {
@@ -347,7 +347,7 @@ const loadConfig = async () => {
 
 const saveConfig = async () => {
   try {
-    await axios.put('/api/logs/config', {
+    await request.put('/api/logs/config', {
       task_log_retention_days: retentionDays.value,
       system_log_retention_days: logConfig.value.system_log_retention_days,
       log_level: logConfig.value.log_level
@@ -360,7 +360,7 @@ const saveConfig = async () => {
 
 const cleanupLogs = async () => {
   try {
-    const response = await axios.post('/api/logs/cleanup', null, {
+    const response = await request.post('/api/logs/cleanup', null, {
       params: { days: retentionDays.value }
     })
     ElMessage.success(response.data.message || '日志清理完成')
@@ -372,7 +372,7 @@ const cleanupLogs = async () => {
 
 const loadTasks = async () => {
   try {
-    const response = await axios.get('/api/scheduler/tasks')
+    const response = await request.get('/api/scheduler/tasks')
     tasks.value = response.data.data || []
   } catch (error) {
     ElMessage.error('加载任务失败')

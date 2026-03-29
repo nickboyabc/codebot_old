@@ -18,7 +18,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import axios from 'axios'
+import request from '../utils/request'
 import { ElMessage } from 'element-plus'
 
 const exportPath = ref('')
@@ -28,7 +28,7 @@ const fileInputRef = ref(null)
 
 const exportMemories = async () => {
   try {
-    const response = await axios.post('/api/memory/export')
+    const response = await request.post('/api/memory/export')
     exportPath.value = response.data.data?.path || ''
     ElMessage.success('导出完成')
   } catch (error) {
@@ -55,7 +55,7 @@ const importMemories = async () => {
   try {
     const formData = new FormData()
     formData.append('file', importFile.value)
-    await axios.post('/api/memory/import', formData, {
+    await request.post('/api/memory/import', formData, {
       headers: {
         'Content-Type': 'multipart/form-data'
       }
