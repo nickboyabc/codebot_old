@@ -120,6 +120,8 @@ const formatDate = (dateStr) => {
 }
 
 onMounted(() => {
+  // 同步用户信息，确保 admin 菜单正确显示
+  userStore.fetchCurrentUser()
   notificationStore.fetchUnreadCount()
   notificationStore.fetchConfig().then(() => {
     const interval = Math.max(5, Math.min(120, Number(config.value?.poll_interval || 30)))

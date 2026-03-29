@@ -73,10 +73,13 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
-  async function changePassword(newPassword) {
+  async function changePassword(oldPassword, newPassword) {
     try {
-      const res = await request.post('/api/auth/change-password', { new_password: newPassword })
-      return res.data || { success: false }
+      const res = await request.post('/api/auth/change-password', {
+        old_password: oldPassword,
+        new_password: newPassword
+      })
+      return res.data || { success: true }
     } catch (e) {
       return { success: false, message: e.response?.data?.detail || '修改失败' }
     }

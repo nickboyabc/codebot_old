@@ -100,7 +100,7 @@ const creating = ref(false)
 const createDialogVisible = ref(false)
 const createFormRef = ref(null)
 
-const currentUserId = computed(() => userStore.userInfo.value?.id)
+const currentUserId = computed(() => userStore.userInfo?.id)
 
 const createForm = reactive({
   username: '',

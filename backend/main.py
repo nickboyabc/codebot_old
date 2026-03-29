@@ -24,13 +24,14 @@ from core.opencode_ws import OpenCodeClient
 from core.memory_manager import MemoryManager
 from core.memory_organizer import run_organize_loop
 from core.lark_ws_bot import LarkWsBot
-from core.scheduler import TaskScheduler
+# from core.scheduler import TaskScheduler  # 已禁用定时任务
 from core.sandbox import SandboxManager
 from services.notification import NotificationService
 from utils.installer import check_and_install_opencode, start_opencode_server, stop_opencode_server
 
 # 导入 API 路由
-from api.routes import chat, memory, scheduler as scheduler_router, skills, notifications, logs, lark, mcp as mcp_router, config as config_router, sandbox as sandbox_router
+from api.routes import chat, memory, skills, notifications, logs, lark, mcp as mcp_router, config as config_router, sandbox as sandbox_router
+# from api.routes import scheduler as scheduler_router  # 已禁用定时任务
 from api.routes import auth, users, audit
 
 
@@ -174,14 +175,14 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("沙箱功能未启用（sandbox.enabled=false）")
     
-    # 6. 初始化定时任务调度器
-    logger.info("初始化定时任务调度器...")
-    scheduler_router.scheduler = TaskScheduler(
-        opencode_ws=opencode_ws,
-        memory_manager=memory_manager,
-        notification_service=notification_service
-    )
-    await scheduler_router.scheduler.start()
+    # 6. 初始化定时任务调度器（已禁用）
+    # logger.info("初始化定时任务调度器...")
+    # scheduler_router.scheduler = TaskScheduler(
+    #     opencode_ws=opencode_ws,
+    #     memory_manager=memory_manager,
+    #     notification_service=notification_service
+    # )
+    # await scheduler_router.scheduler.start()
     
     force_auto_start = os.environ.get("CODEBOT_FORCE_OPENCODE_AUTOSTART", "").strip().lower() in {"1", "true", "yes", "on"}
     should_auto_start = bool(force_auto_start or app_config.opencode.auto_start or os.environ.get("CODEBOT_DATA_DIR"))
@@ -287,8 +288,8 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
 
-    if scheduler_router.scheduler:
-        await scheduler_router.scheduler.stop()
+    # if scheduler_router.scheduler:
+    #     await scheduler_router.scheduler.stop()
     
     if sandbox_manager:
         await sandbox_manager.shutdown()
@@ -360,7 +361,7 @@ if app_config.cors.enabled:
 # 注册 API 路由
 app.include_router(chat.router, prefix="/api/chat", tags=["聊天"])
 app.include_router(memory.router, prefix="/api/memory", tags=["记忆"])
-app.include_router(scheduler_router.router, prefix="/api/scheduler", tags=["定时任务"])
+# app.include_router(scheduler_router.router, prefix="/api/scheduler", tags=["定时任务"])
 app.include_router(skills.router, prefix="/api/skills", tags=["技能"])
 app.include_router(mcp_router.router, prefix="/api/mcp", tags=["MCP"])
 app.include_router(config_router.router, prefix="/api/config", tags=["配置"])

@@ -122,6 +122,24 @@ def _load_all_skills() -> List[dict]:
                 "source": "opencode",
             })
 
+    # OpenCode 技能（~/.config/opencode/skills/）
+    oc_config_dir = Path.home() / ".config" / "opencode" / "skills"
+    if oc_config_dir.exists():
+        for entry in oc_config_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            skill_md = entry / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            name, description, content = _read_skill_markdown(skill_md)
+            skills.append({
+                "id": f"opencode:{entry.name}",
+                "name": name or entry.name,
+                "description": description,
+                "skill_md_content": content,
+                "source": "opencode",
+            })
+
     # 自定义目录技能
     try:
         from config import app_config as _app_config

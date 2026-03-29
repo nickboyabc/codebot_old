@@ -119,6 +119,29 @@ npm start
 开发模式下（从源码运行），Electron 默认使用 `venv\\Scripts\\python.exe`（若存在）启动 `backend\\main.py`，以确保后端代码变更立即生效；如需强制使用 `backend\\dist\\codebot-backend.exe`，可设置环境变量 `CODEBOT_BACKEND_MODE=exe`。
 Electron 会优先使用应用内置的 `opencode` 可执行文件（`electron/vendor/opencode` 或打包后的 `resources/opencode`）自动拉起 `opencode serve`；若内置文件不可用或不可执行，会自动回退到系统 PATH 中的 `opencode`。桌面端会强制开启 OpenCode 自动拉起，并优先尝试 1120（回退配置端口与 4096）。
 
+### 用户认证
+
+系统使用 JWT Token 认证机制。
+
+**默认账户**：
+
+| 用户名 | 密码 | 角色 |
+|--------|------|------|
+| admin | admin123 | 管理员 |
+| user1 | user123 | 普通用户 |
+
+**新用户注册**：
+新注册用户默认状态为 `pending`（待审批），需要管理员在后台将状态改为 `active` 后方可登录。
+
+**受保护接口**：
+除 `/api/auth/login` 和 `/api/auth/register` 外，其他接口均需要携带有效 Token：
+
+```
+Authorization: Bearer <token>
+```
+
+前端已内置 Token 自动刷新机制。
+
 ### Windows 沙箱现状
 
 - 沙箱已重构为**工作目录隔离**模式，移除 QEMU 依赖，开箱即用，无需安装任何额外软件

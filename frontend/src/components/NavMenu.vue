@@ -1,5 +1,5 @@
 <template>
-  <el-menu mode="horizontal" :default-active="$route.path">
+  <el-menu mode="horizontal" :default-active="$route.path" :router="true">
     <el-menu-item index="/chat">
       <el-icon><ChatDotRound /></el-icon>
       <span>聊天</span>
@@ -14,10 +14,10 @@
         <el-icon><Folder /></el-icon>
         <span>记忆</span>
       </el-menu-item>
-      <el-menu-item index="/scheduler">
+      <!-- <el-menu-item index="/scheduler">
         <el-icon><Clock /></el-icon>
         <span>定时任务</span>
-      </el-menu-item>
+      </el-menu-item> -->
       <el-menu-item index="/skills">
         <el-icon><Grid /></el-icon>
         <span>技能</span>
@@ -85,20 +85,41 @@ const handleCommand = async (command) => {
 }
 
 const showChangePasswordDialog = () => {
-  ElMessageBox.prompt('请输入新密码（8位以上，包含字母和数字）', '修改密码', {
+  ElMessageBox.confirm('请输入旧密码和新密码', '修改密码', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
     inputType: 'password',
-    inputPattern: /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/,
-    inputErrorMessage: '密码至少8位，需包含字母和数字'
-  }).then(({ value }) => {
-    userStore.changePassword(value).then(res => {
-      if (res.success) {
-        ElMessage.success('密码修改成功')
-      } else {
-        ElMessage.error(res.message || '修改失败')
+    contentStyle: 'text-align: left;',
+  }).then(() => {
+    // 第一步：输入旧密码
+    ElMessageBox.prompt('请输入旧密码', '验证身份', {
+      confirmButtonText: '下一步',
+      cancelButtonText: '取消',
+      inputType: 'password',
+      closeOnClickModal: false,
+    }).then(({ value: oldPassword }) => {
+      if (!oldPassword) {
+        ElMessage.error('请输入旧密码')
+        return
       }
-    })
+      // 第二步：输入新密码
+      ElMessageBox.prompt('请输入新密码（8位以上，包含字母和数字）', '设置新密码', {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        inputType: 'password',
+        inputPattern: /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/,
+        inputErrorMessage: '密码至少8位，需包含字母和数字'
+      }).then(({ value: newPassword }) => {
+        userStore.changePassword(oldPassword, newPassword).then(res => {
+          if (res.success) {
+            ElMessage.success('密码修改成功，请重新登录')
+            userStore.logout()
+          } else {
+            ElMessage.error(res.message || '修改失败')
+          }
+        })
+      }).catch(() => {})
+    }).catch(() => {})
   }).catch(() => {})
 }
 </script>

@@ -987,38 +987,8 @@ def _extract_time_for_reminder(message: str, default_hour: int = 9, default_minu
 
 
 def _looks_like_schedule_message(message: str) -> bool:
-    if not message:
-        return False
-    triggers = ["提醒", "定时", "闹钟", "日程", "定时任务", "通知", "叫我", "提示我"]
-    time_hints = [
-        "每天", "每周", "每月", "每年", "每小时", "每分钟",
-        "早上", "上午", "中午", "下午", "晚上", "凌晨",
-        "周一", "周二", "周三", "周四", "周五", "周六", "周日",
-        "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日",
-        "工作日", "周末"
-    ]
-    task_verbs = ["写", "生成", "总结", "整理", "保存", "备份", "发送", "推送", "提醒", "通知", "检查", "同步", "下载", "导出"]
-    has_time_hint = bool(
-        any(item in message for item in time_hints)
-        or re.search(r"\d{1,2}\s*点|\d{1,2}\s*[:：]\s*\d{2}", message)
-        or re.search(r"\d+\s*(分钟|小时|天|周|个月|年)\s*(后|之后|以后)", message)
-        or re.search(r"(半小时|一小时|一天|一周|一个月)\s*(后|之后|以后)", message)
-    )
-    has_date_hint = bool(
-        re.search(r"\d{1,2}\s*月\s*\d{1,2}\s*(日|号)?", message)
-        or re.search(r"(?<!\d)\d{1,2}\s*[\/\-.]\s*\d{1,2}(?!\d)", message)
-    )
-    if not has_time_hint and not has_date_hint:
-        return False
-    if _looks_like_birthday_reminder_message(message):
-        return True
-    # 含"保存到X盘"是明确的文件任务，有时间就是定时任务
-    if re.search(r"保存到\s*[a-zA-Z]\s*盘", message):
-        return True
-    has_trigger = any(item in message for item in triggers)
-    has_repeat_hint = any(item in message for item in time_hints)
-    has_task_verb = any(item in message for item in task_verbs)
-    return has_trigger or has_repeat_hint or has_task_verb
+    # 定时任务功能已禁用，始终返回 False
+    return False
 
 
 def _extract_reminder_content(message: str) -> str:

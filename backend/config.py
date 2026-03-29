@@ -100,7 +100,7 @@ class CorsConfig(BaseModel):
     enabled: bool = True
     # 允许的来源域名列表，["*"] 表示允许所有（不推荐生产环境使用）
     allow_origins: List[str] = ["*"]
-    allow_credentials: bool = True
+    allow_credentials: bool = False  # 解决与 allow_origins: ["*"] 的冲突
     allow_methods: List[str] = ["*"]
     allow_headers: List[str] = ["*"]
 
